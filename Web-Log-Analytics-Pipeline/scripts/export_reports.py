@@ -629,15 +629,30 @@ def export_reports(
             if not os.path.isfile(art_path) or os.path.getsize(art_path) == 0:
                 raise RuntimeError(f"Report validation failed: artifact '{artifact}' is missing or empty")
 
-        # Atomic publication: rename staging_dir -> out_dir
-        if os.path.exists(out_dir):
-            shutil.rmtree(out_dir)
-        
-        parent_out = os.path.dirname(out_dir)
-        if parent_out and not os.path.exists(parent_out):
-            os.makedirs(parent_out, exist_ok=True)
-            
-        os.replace(staging_dir, out_dir)
+        # Atomic publication with rollback protection:
+        backup_dir = f"{out_dir}.bak.{os.getpid()}"
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+        has_existing = os.path.exists(out_dir)
+        if has_existing:
+            os.replace(out_dir, backup_dir)
+
+        try:
+            parent_out = os.path.dirname(out_dir)
+            if parent_out and not os.path.exists(parent_out):
+                os.makedirs(parent_out, exist_ok=True)
+            os.replace(staging_dir, out_dir)
+        except Exception as pub_err:
+            # Rollback: restore previous valid report set if replacement failed
+            if has_existing and os.path.exists(backup_dir) and not os.path.exists(out_dir):
+                os.replace(backup_dir, out_dir)
+            raise pub_err
+
+        # Clean up backup after confirmed successful replacement
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
         print(f"[export] Successfully exported 8 reports and metadata to: {out_dir}")
         return 0
 
@@ -645,6 +660,11 @@ def export_reports(
         print(f"Error during report export: {e}", file=sys.stderr)
         if os.path.exists(staging_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)
+        backup_dir = f"{out_dir}.bak.{os.getpid()}"
+        if os.path.exists(backup_dir) and not os.path.exists(out_dir):
+            os.replace(backup_dir, out_dir)
+        elif os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
         return 1
 
 

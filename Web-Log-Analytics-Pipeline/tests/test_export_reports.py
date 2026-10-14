@@ -261,6 +261,61 @@ class TestExportReports(unittest.TestCase):
         self.assertEqual(code2, 0, "Must allow overwrite when force=True")
         self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "dummy.txt")))
 
+    def test_overwrite_preserves_existing_on_staging_failure(self):
+        """Verifies that an existing report set is not destroyed if staging fails during --force export."""
+        # 1. Create a successful valid report set first
+        code_init = export_reports.export_reports("valid-init", self.work_dir, self.reports_dir)
+        self.assertEqual(code_init, 0)
+        self.assertTrue(os.path.isfile(os.path.join(self.reports_dir, "traffic_hourly.csv")))
+        with open(os.path.join(self.reports_dir, "traffic_hourly.csv"), "rb") as f:
+            original_bytes = f.read()
+
+        # 2. Attempt overwrite with a broken work dir (missing inputs) and force=True
+        broken_work = os.path.join(self.temp_dir, "broken_work")
+        os.makedirs(broken_work, exist_ok=True)
+        with open(os.path.join(broken_work, "run_meta.json"), "w") as f:
+            json.dump({"status": "SUCCESS", "counters": {"TOTAL_RECORDS": 10, "VALID_RECORDS": 10}, "run_id": "broken", "invariant_ok": True}, f)
+
+        code_fail = export_reports.export_reports("broken", broken_work, self.reports_dir, force=True)
+        self.assertEqual(code_fail, 1, "Export must fail when inputs are missing")
+
+        # 3. Verify original report set is completely intact
+        self.assertTrue(os.path.isfile(os.path.join(self.reports_dir, "traffic_hourly.csv")))
+        with open(os.path.join(self.reports_dir, "traffic_hourly.csv"), "rb") as f:
+            current_bytes = f.read()
+        self.assertEqual(current_bytes, original_bytes, "Previous report set must be preserved intact on failure")
+
+    def test_overwrite_rollback_on_publication_failure(self):
+        """Verifies rollback restores previous reports if an exception occurs during final replacement."""
+        # 1. Create valid initial report set
+        code_init = export_reports.export_reports("valid-init", self.work_dir, self.reports_dir)
+        self.assertEqual(code_init, 0)
+        with open(os.path.join(self.reports_dir, "traffic_hourly.csv"), "rb") as f:
+            original_bytes = f.read()
+
+        # 2. Mock os.replace to fail on the second call (staging -> out_dir rename)
+        real_replace = os.replace
+        call_count = [0]
+
+        def failing_replace(src, dst):
+            call_count[0] += 1
+            # Call 1 is out_dir -> backup_dir (allow)
+            # Call 2 is staging_dir -> out_dir (fail to trigger rollback)
+            if call_count[0] == 2:
+                raise PermissionError("Simulated filesystem lock during directory replacement")
+            return real_replace(src, dst)
+
+        import unittest.mock as mock
+        with mock.patch("os.replace", side_effect=failing_replace):
+            code_fail = export_reports.export_reports("valid-second", self.work_dir, self.reports_dir, force=True)
+            self.assertEqual(code_fail, 1, "Export must fail and catch exception")
+
+        # 3. Verify rollback restored original reports
+        self.assertTrue(os.path.isfile(os.path.join(self.reports_dir, "traffic_hourly.csv")))
+        with open(os.path.join(self.reports_dir, "traffic_hourly.csv"), "rb") as f:
+            current_bytes = f.read()
+        self.assertEqual(current_bytes, original_bytes, "Previous report set must be rolled back on publish failure")
+
     def test_paths_with_spaces(self):
         """Verifies paths containing spaces work transparently."""
         space_work = os.path.join(self.temp_dir, "work with spaces")
