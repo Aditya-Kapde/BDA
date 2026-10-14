@@ -171,3 +171,15 @@ python scripts/verify_with_pandas.py \
   --reports-dir reports/daily-2019-11-01 \
   --csv src/test/resources/fixtures/mini_clickstream.csv
 ```
+
+### Step 10: Launch the Streamlit Analytics Dashboard (Milestone M9)
+```bash
+# Launch interactive 5-view dashboard reading exported reports:
+python scripts/run_dashboard.py
+
+# Alternatively, specify a custom reports base directory or port:
+python scripts/run_dashboard.py --server.port 8501 -- --reports-dir reports/daily-2019-11-01
+
+# Run automated dashboard tests (headless):
+python tests/test_dashboard.py
+```

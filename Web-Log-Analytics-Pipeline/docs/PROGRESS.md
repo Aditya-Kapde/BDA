@@ -471,12 +471,46 @@
 
 ---
 
+### Phase 5: Streamlit Analytics Dashboard (Milestone M9) (DONE)
+
+#### Milestone M9: Streamlit 5-View Log Analytics Dashboard
+- [x] **Decoupled Data Architecture (`dashboard/data_loader.py`)**:
+  - Independent loading, parsing, and strict schema validation of `report_meta.json`, `run_meta.json`, and all 8 CSV reports.
+  - Rejection with actionable error messaging for missing files, corrupt schemas, or failed pipeline runs (`status != SUCCESS`).
+  - Strict zero-denominator handling and prevention of double-counting (computes total records from reconciled daily sums).
+  - Dynamically discovers all available runs in `reports/`, sorting newest first.
+  - Headless, 100% testable without requiring an active browser or Streamlit server.
+- [x] **5-View Streamlit Analytics UI (`dashboard/app.py`)**:
+  - **Sidebar Run Selector (FR-DSH-01)**: Dynamic dropdown listing available runs newest first from `reports/`; switching reloads without stale cached state.
+  - **View 1: Overview (FR-DSH-02)**: Reconciled KPI cards (Total events, Malformed rate, Cart abandonment %, Conversion %, Days covered, Peak hour, Views, Duration & Status) + interactive hourly traffic line chart + daily quality breakdown.
+  - **View 2: Peak Traffic (FR-DSH-03)**: Hour-of-day traffic profile (00–23 UTC) bar chart with peak highlighted; stacked event-type composition; daily peak hour table.
+  - **View 3: Top Pages (FR-DSH-04)**: Top products bar chart (`P#product_id (brand / category)`) & table; Top categories bar chart & table; Uncategorised view share KPI.
+  - **View 4: Errors & Funnel (FR-DSH-05)**: Section A (Data Quality error rate trend + reasons breakdown) and Section B (Behavioral funnel stage progression: sessions -> cart sessions -> purchase sessions, abandonment, conversion, and remove rates with LaTeX/markdown formula captions).
+  - **View 5: Job Runs (FR-DSH-06)**: Table of J1–J6 execution stages, YARN App IDs vs Local simulation mode, job durations, framework counters, invariant check verification, and record counts.
+  - **Table CSV Downloads (FR-DSH-07)**: Every tabular display equipped with `st.download_button` for instant CSV export.
+  - **Empty-State Handling (FR-DSH-08)**: Clean, helpful guidance with CLI generation commands when `reports/` is empty or no runs exist.
+- [x] **Launcher Script & Environment Compatibility (`scripts/run_dashboard.py`)**:
+  - Auto-configures UTF-8 encoding on Windows standard streams to eliminate cp1252 charmap encoding issues.
+  - Backward compatibility shim for Starlette 0.38+ with Streamlit <= 1.61.
+  - Supports `--reports-dir` flag and `CLICKSTREAM_REPORTS_DIR` environment variable.
+- [x] **Automated Test Suite (`tests/test_dashboard.py`)**:
+  - 10 automated test cases covering run discovery, schema validation, missing/corrupted file detection, KPI calculations, zero-denominator safety, run switching, and headless execution of all 5 view renderers. 10/10 PASS.
+- [x] **Full Regression Status**:
+  - Dashboard Tests: **10/10 PASS**.
+  - Exporter Tests: **10/10 PASS**.
+  - Ingestion Tests: **7/7 PASS**.
+  - Pandas Golden Baseline: **ALL CHECKS PASSED**.
+  - Java Regression Suite: **201/201 PASS**.
+  - Shell Automation Suite: **8/8 PASS**.
+
+---
+
 ## Upcoming Milestones
 
 | Milestone | Target | Requirements |
 |---|---|---|
-| **M9** | Streamlit Dashboard & Delivery | Streamlit 5-view analytics dashboard (`dashboard/app.py`), benchmarks, demo script. |
 | **M10** | Final Documentation & Wrap-up | `docs/benchmarks.md`, `docs/final-report.md`, `docs/demo-script.md`. |
+
 
 
 

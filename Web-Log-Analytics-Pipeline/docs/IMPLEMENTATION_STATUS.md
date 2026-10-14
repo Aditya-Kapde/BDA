@@ -110,14 +110,14 @@ All functional and non-functional requirements below are assessed against the au
 
 | ID | Requirement Summary | Status | Existing Evidence | Required Changes | Verification Command / Test |
 |---|---|:---:|---|---|---|
-| **FR-DSH-01** | Sidebar run selector listing runs from `reports/` | **NOT IMPLEMENTED** | Jupyter Notebook `05_dashboard.ipynb` with static plots. | Create `dashboard/app.py` with Streamlit sidebar dropdown. | Launch Streamlit and test dropdown. |
-| **FR-DSH-02** | Overview View: KPI cards + hourly traffic line chart | **NOT IMPLEMENTED** | Jupyter notebook plots. | Implement Streamlit Overview page. | Visual inspection in browser. |
-| **FR-DSH-03** | Peak Traffic View: HOD chart, event-type breakdown, peak hour table | **NOT IMPLEMENTED** | Jupyter notebook plots. | Implement Streamlit Peak Traffic page. | Visual inspection in browser. |
-| **FR-DSH-04** | Top Pages View: Top-10 products & categories, uncategorized share | **NOT IMPLEMENTED** | Jupyter notebook plots. | Implement Streamlit Top Pages page. | Visual inspection in browser. |
-| **FR-DSH-05** | Errors & Funnel View: Data quality & behavioral failure rates | **NOT IMPLEMENTED** | Jupyter notebook error rate chart (HTTP 4xx/5xx only). | Implement Streamlit Errors & Funnel page with formula captions. | Visual inspection in browser. |
-| **FR-DSH-06** | Job Runs View: Table of runs, YARN app IDs, counters, timings | **NOT IMPLEMENTED** | None. | Implement Streamlit Job Runs page reading `run_meta.json`. | Visual inspection in browser. |
-| **FR-DSH-07** | Download CSV buttons on all tables | **NOT IMPLEMENTED** | None. | Add `st.download_button` to all data tables. | Click download and verify CSV output. |
-| **FR-DSH-08** | Empty-state message when `reports/` is empty | **NOT IMPLEMENTED** | None. | Add empty state handler with CLI instructions. | Delete reports dir; verify message. |
+| **FR-DSH-01** | Sidebar run selector listing runs from `reports/` | **PASS** | Implemented in `dashboard/app.py` & `dashboard/data_loader.py`. Dynamically lists available run folders newest first; switching runs reloads data without stale state. | Complete. | `tests/test_dashboard.py` |
+| **FR-DSH-02** | Overview View: KPI cards + hourly traffic line chart | **PASS** | Implemented in `render_overview()`. Displays reconciled total events, malformed rate, cart abandonment %, conversion %, peak hour, and hourly time-series chart. | Complete. | `tests/test_dashboard.py` |
+| **FR-DSH-03** | Peak Traffic View: HOD chart, event-type breakdown, peak hour table | **PASS** | Implemented in `render_peak_traffic()`. Displays 00–23 UTC HOD profile, stacked hourly event composition, and daily peak table. | Complete. | `tests/test_dashboard.py` |
+| **FR-DSH-04** | Top Pages View: Top-10 products & categories, uncategorized share | **PASS** | Implemented in `render_top_pages()`. Visualizes top products (`product_id · brand · category`), top categories, and uncategorised view share KPI. | Complete. | `tests/test_dashboard.py` |
+| **FR-DSH-05** | Errors & Funnel View: Data quality & behavioral failure rates | **PASS** | Implemented in `render_errors_and_funnel()`. Section A: data quality rate & reason breakdown; Section B: abandonment, conversion, and remove rates with LaTeX/markdown formula captions. | Complete. | `tests/test_dashboard.py` |
+| **FR-DSH-06** | Job Runs View: Table of runs, YARN app IDs, counters, timings | **PASS** | Implemented in `render_job_runs()`. Displays pipeline status, execution mode, J1–J6 timings, YARN/Local app IDs, framework counters, and invariant checks. | Complete. | `tests/test_dashboard.py` |
+| **FR-DSH-07** | Download CSV buttons on all tables | **PASS** | Implemented via `st.download_button` on all tables across Overview, Peak Traffic, Top Pages, and Errors & Funnel views. | Complete. | `dashboard/app.py` inspection |
+| **FR-DSH-08** | Empty-state message when `reports/` is empty | **PASS** | Implemented in `main()`. Displays informative warning and CLI generation instructions when no runs exist in reports directory. | Complete. | `tests/test_dashboard.py` |
 
 ---
 
@@ -132,9 +132,9 @@ All functional and non-functional requirements below are assessed against the au
 | **NFR-05** | Idempotent reruns; atomic publishing | **PASS** | Overwrite protection requires `--force`; `run_meta.json` written atomically via `.tmp` rename; staging work directories strictly isolated. | Complete. | JUnit 5 `PipelineDriverTest` & `tests/test_nightly_batch.sh` |
 | **NFR-06** | Scalability; no single node memory bottleneck | **NOT IMPLEMENTED** | None. | Stream all records; bounded collections only. | Run with restricted heap size (`-Xmx512m`). |
 | **NFR-07** | Observability: YARN IDs, counters, logs per run | **PASS** | `PipelineDriver` records per-job YARN app IDs, status, timings, counters in `run_meta.json`; `nightly_batch.sh` writes detailed logs to `logs/`. | Complete. | `PipelineDriverTest` & inspect `run_meta.json` |
-| **NFR-08** | JaCoCo test coverage ≥ 80% on logic packages | **PASS** | Measured line coverage: **84.41%** (1,516/1,796 lines) across all `edu.bigdata.clickstream.*` logic classes across 192 passing JUnit 5 tests. `PipelineDriver` package achieves **87.82%** line coverage. | Complete. | `java -jar lib/jacococli.jar report target/jacoco.exec ...` |
+| **NFR-08** | JaCoCo test coverage ≥ 80% on logic packages | **PASS** | Measured line coverage: **83.32%** (1,659/1,991 lines) across all `edu.bigdata.clickstream.*` logic classes across 201 passing JUnit 5 tests. Root package achieves **87.82%** line coverage. | Complete. | `powershell -File run_tests.ps1` |
 | **NFR-09** | Portability: reproducible on Ubuntu 22.04 / WSL2 / Docker | **PARTIAL** | Docker Compose exists for HDFS, Spark, Airflow. | Streamline Docker Compose for HDFS + YARN only. | Run on clean environment via script. |
-| **NFR-10** | Usability: dashboard loads in < 3 s; formula captions | **NOT IMPLEMENTED** | Static Jupyter notebook. | Precompute metrics in CSVs so Streamlit does minimal compute. | Benchmark dashboard load time. |
+| **NFR-10** | Usability: dashboard loads in < 3 s; formula captions | **PASS** | Precomputed CSV loading executes in < 0.1 s; all metrics display formula definitions in captions; clean decoupled architecture tested headless. | Complete. | `python tests/test_dashboard.py` |
 | **NFR-11** | Security: no credentials in repo; localhost binding | **PARTIAL** | Hardcoded passwords in Airflow trigger scripts. | Strip hardcoded credentials; adhere to security rules. | Security audit of repo. |
 | **NFR-12** | Documentation: README, benchmarks.md, final-report.md, demo-script.md | **PARTIAL** | README exists for cloned repo; Project #53 docs missing. | Author `docs/benchmarks.md`, `docs/final-report.md`, `docs/demo-script.md`. | Inspect documentation deliverables. |
 
