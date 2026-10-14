@@ -1,0 +1,28 @@
+# Build targets
+target/
+**/target/
+
+# JaCoCo execution data
+*.exec
+**/jacoco.exec
+
+# Logs & Temporary files
+*.log
+**/logs/*.log
+**/.pipeline.lock
+**/*.pipeline.lock
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Large raw dataset files
+data/raw/
+*.parquet

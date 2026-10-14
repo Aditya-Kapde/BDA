@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+    <!-- Queues Configuration -->
+    <property>
+        <name>yarn.scheduler.capacity.root.queues</name>
+        <value>default,batch</value>
+        <description>The queues at the root level: default and batch.</description>
+    </property>
+
+    <!-- Default Queue Configuration: 30% -->
+    <property>
+        <name>yarn.scheduler.capacity.root.default.capacity</name>
+        <value>30</value>
+        <description>Default queue allocated 30% capacity for ad-hoc queries.</description>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.default.maximum-capacity</name>
+        <value>100</value>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.default.user-limit-factor</name>
+        <value>1</value>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.default.state</name>
+        <value>RUNNING</value>
+    </property>
+
+    <!-- Batch Queue Configuration: 70% -->
+    <property>
+        <name>yarn.scheduler.capacity.root.batch.capacity</name>
+        <value>70</value>
+        <description>Batch queue allocated 70% capacity for nightly clickstream pipeline.</description>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.batch.maximum-capacity</name>
+        <value>100</value>
+        <description>Batch queue can burst up to 100% when cluster is idle.</description>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.batch.user-limit-factor</name>
+        <value>1</value>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.root.batch.state</name>
+        <value>RUNNING</value>
+    </property>
+
+    <!-- Cluster-wide Capacity Scheduler Settings -->
+    <property>
+        <name>yarn.scheduler.capacity.maximum-am-resource-percent</name>
+        <value>0.5</value>
+        <description>Maximum percent of resources in the cluster which can be used to run application masters.</description>
+    </property>
+    <property>
+        <name>yarn.scheduler.capacity.node-locality-delay</name>
+        <value>40</value>
+    </property>
+</configuration>

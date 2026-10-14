@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+    <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://hdfs-namenode:9000</value>
+        <description>Default HDFS filesystem URI for container and cluster network clients.</description>
+    </property>
+    <property>
+        <name>hadoop.tmp.dir</name>
+        <value>/tmp/hadoop-${user.name}</value>
+        <description>Base directory for temporary Hadoop runtime files.</description>
+    </property>
+    <property>
+        <name>io.file.buffer.size</name>
+        <value>131072</value>
+        <description>I/O buffer size (128 KB) for streaming log parsing.</description>
+    </property>
+</configuration>

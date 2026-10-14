@@ -1,0 +1,149 @@
+# docker-compose.yml — Hadoop MapReduce, HDFS & YARN Pipeline
+# Project #53: Batch MapReduce Clickstream Log Analysis
+#
+# Topology:
+#   hdfs-namenode         HDFS NameNode (RPC :9000, Web UI host 19870 -> container 9870)
+#   hdfs-datanode         HDFS DataNode (Data storage, single replica for pseudo-distributed)
+#   yarn-resourcemanager  YARN ResourceManager (Web UI :8088, Capacity Scheduler)
+#   yarn-nodemanager      YARN NodeManager (Container executor :8042)
+#   historyserver         MapReduce JobHistoryServer (Web UI :19888)
+#
+# Retired Services (preserved in docker-compose.yml.original_spark_airflow_bak):
+#   - spark-master, spark-worker (retired: analytics strictly restricted to MapReduce Java)
+#   - airflow-*, postgres (retired: orchestration uses cron + flock per PRD/SRS)
+#   - jupyter (retired: dashboard uses Streamlit per PRD/SRS)
+#
+# Ports:
+#   19870:9870   HDFS NameNode UI (remapped from 9870 to avoid Windows Hyper-V port exclusion)
+#   9000:9000    HDFS NameNode RPC
+#   8088:8088    YARN ResourceManager Web UI (Job monitoring & Capacity Scheduler queues)
+#   8042:8042    YARN NodeManager Web UI
+#   19888:19888  MapReduce JobHistoryServer UI
+
+version: "3.8"
+
+services:
+
+  # ── HDFS NameNode ─────────────────────────────────────────────────────────
+  hdfs-namenode:
+    image: apache/hadoop:3.3.6
+    container_name: hdfs-namenode
+    hostname: hdfs-namenode
+    command: ["hdfs", "namenode"]
+    user: hadoop
+    environment:
+      - HADOOP_CONF_DIR=/etc/hadoop
+      - CLUSTER_NAME=clickstream-cluster
+    ports:
+      - "19870:9870"
+      - "9000:9000"
+    volumes:
+      - hdfs-nn-data:/opt/hadoop/dfs/name
+      - ./conf/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./conf/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+    networks:
+      - hadoopnet
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9870"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── HDFS DataNode ─────────────────────────────────────────────────────────
+  hdfs-datanode:
+    image: apache/hadoop:3.3.6
+    container_name: hdfs-datanode
+    hostname: hdfs-datanode
+    command: ["hdfs", "datanode"]
+    user: hadoop
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    environment:
+      - HADOOP_CONF_DIR=/etc/hadoop
+    volumes:
+      - hdfs-dn-data:/opt/hadoop/dfs/data
+      - ./conf/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./conf/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+    networks:
+      - hadoopnet
+
+  # ── YARN ResourceManager ──────────────────────────────────────────────────
+  yarn-resourcemanager:
+    image: apache/hadoop:3.3.6
+    container_name: yarn-resourcemanager
+    hostname: yarn-resourcemanager
+    command: ["yarn", "resourcemanager"]
+    user: hadoop
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./conf/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./conf/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+      - ./conf/yarn-site.xml:/etc/hadoop/yarn-site.xml:ro
+      - ./conf/mapred-site.xml:/etc/hadoop/mapred-site.xml:ro
+      - ./conf/capacity-scheduler.xml:/etc/hadoop/capacity-scheduler.xml:ro
+    networks:
+      - hadoopnet
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8088/cluster"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── YARN NodeManager ──────────────────────────────────────────────────────
+  yarn-nodemanager:
+    image: apache/hadoop:3.3.6
+    container_name: yarn-nodemanager
+    hostname: yarn-nodemanager
+    command: ["yarn", "nodemanager"]
+    user: hadoop
+    depends_on:
+      yarn-resourcemanager:
+        condition: service_healthy
+    ports:
+      - "8042:8042"
+    volumes:
+      - ./conf/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./conf/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+      - ./conf/yarn-site.xml:/etc/hadoop/yarn-site.xml:ro
+      - ./conf/mapred-site.xml:/etc/hadoop/mapred-site.xml:ro
+      - ./conf/capacity-scheduler.xml:/etc/hadoop/capacity-scheduler.xml:ro
+    networks:
+      - hadoopnet
+
+  # ── MapReduce JobHistoryServer ─────────────────────────────────────────────
+  historyserver:
+    image: apache/hadoop:3.3.6
+    container_name: historyserver
+    hostname: historyserver
+    command: ["mapred", "historyserver"]
+    user: hadoop
+    depends_on:
+      yarn-resourcemanager:
+        condition: service_healthy
+    ports:
+      - "19888:19888"
+    volumes:
+      - ./conf/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./conf/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+      - ./conf/yarn-site.xml:/etc/hadoop/yarn-site.xml:ro
+      - ./conf/mapred-site.xml:/etc/hadoop/mapred-site.xml:ro
+    networks:
+      - hadoopnet
+
+volumes:
+  hdfs-nn-data:
+    name: clickstream-hdfs-nn-data
+  hdfs-dn-data:
+    name: clickstream-hdfs-dn-data
+
+networks:
+  hadoopnet:
+    name: clickstream-hadoopnet
+    driver: bridge
