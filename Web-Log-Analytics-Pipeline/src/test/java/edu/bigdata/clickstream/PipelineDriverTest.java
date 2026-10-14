@@ -14,10 +14,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Instant;
@@ -385,9 +388,13 @@ public class PipelineDriverTest {
         assertTrue(json.contains("\"J1_HourlyTraffic\""));
         assertTrue(json.contains("\"J6_DailyFunnel\""));
 
-        // Verify lock file removed after successful completion
-        File lockFile = PipelineDriver.getLocalFile(PipelineDriver.computeLockPath(new Path(workDir.getAbsolutePath())));
-        assertFalse(lockFile.exists(), "Lock file must be deleted upon exit");
+        // Verify lock released while coordination artifact remains
+        Path lockPath = PipelineDriver.computeLockPath(new Path(workDir.getAbsolutePath()));
+        File lockFile = PipelineDriver.getLocalFile(lockPath);
+        assertNotNull(lockFile);
+        assertTrue(lockFile.exists(), "Persistent lock file must remain on disk");
+        assertFalse(PipelineDriver.isPipelineLocked(FileSystem.getLocal(new Configuration()), lockPath),
+                "Lock must be released and inactive upon pipeline completion");
     }
 
     @Test
@@ -437,9 +444,13 @@ public class PipelineDriverTest {
         assertTrue(json.contains("\"status\": \"FAILED\""));
         assertTrue(json.contains("\"failed_job\": \"J3_ViewCount\""));
 
-        // Lock file must be cleaned up even on failure
-        File lockFile = PipelineDriver.getLocalFile(PipelineDriver.computeLockPath(new Path(workDir.getAbsolutePath())));
-        assertFalse(lockFile.exists(), "Lock file must be cleaned up on failure");
+        // Lock must be released even on failure while coordination artifact remains
+        Path lockPath = PipelineDriver.computeLockPath(new Path(workDir.getAbsolutePath()));
+        File lockFile = PipelineDriver.getLocalFile(lockPath);
+        assertNotNull(lockFile);
+        assertTrue(lockFile.exists(), "Persistent lock file must remain on disk");
+        assertFalse(PipelineDriver.isPipelineLocked(FileSystem.getLocal(new Configuration()), lockPath),
+                "Lock must be released upon failure");
     }
 
     @Test
@@ -793,8 +804,10 @@ public class PipelineDriverTest {
         });
 
         assertEquals(0, exitCode);
-        // Lock released upon completion
-        assertFalse(lockFile.exists(), "Lock file must be deleted upon pipeline completion");
+        // Lock released upon completion: OS FileLock released, coordination artifact remains
+        assertFalse(PipelineDriver.isPipelineLocked(FileSystem.getLocal(driver.getConf()), lockPath),
+                "Lock must be released and inactive upon pipeline completion");
+        assertTrue(lockFile.exists(), "Persistent lock coordination artifact must remain on disk");
     }
 
     @Test
@@ -945,6 +958,182 @@ public class PipelineDriverTest {
         assertTrue(metaFile.exists());
         String content = new String(Files.readAllBytes(metaFile.toPath()), StandardCharsets.UTF_8);
         assertTrue(content.contains("\"status\": \"SUCCESS\""));
+    }
+
+    public static class LockHolderMain {
+        public static void main(String[] args) throws Exception {
+            File lockFile = new File(args[0]);
+            Configuration conf = new Configuration();
+            Path lockPath = new Path(lockFile.getAbsolutePath());
+            PipelineDriver.PipelineLock lock = new PipelineDriver.PipelineLock(FileSystem.getLocal(conf), lockPath);
+            if (!lock.tryAcquire("child_process_run")) {
+                System.out.println("FAILED");
+                System.out.flush();
+                System.exit(1);
+            }
+            System.out.println("ACQUIRED");
+            System.out.flush();
+
+            // Wait for parent signal to release
+            new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8)).readLine();
+            lock.close();
+            System.out.println("RELEASED");
+            System.out.flush();
+            System.exit(0);
+        }
+    }
+
+    @Test
+    @DisplayName("Regression: Separate process holding lock blocks competing process, and releases cleanly upon exit")
+    void testSeparateProcessMutualExclusion(@TempDir File tempDir) throws Exception {
+        File workDir = new File(tempDir, "work_separate_proc");
+        assertTrue(workDir.mkdirs());
+        Path lockPath = PipelineDriver.computeLockPath(new Path(workDir.getAbsolutePath()));
+        File lockFile = PipelineDriver.getLocalFile(lockPath);
+        assertNotNull(lockFile);
+
+        String javaHome = System.getProperty("java.home");
+        String javaBin = javaHome + File.separator + "bin" + File.separator + "java";
+        String classpath = System.getProperty("java.class.path");
+
+        ProcessBuilder pb = new ProcessBuilder(
+            javaBin,
+            "-cp", classpath,
+            "edu.bigdata.clickstream.PipelineDriverTest$LockHolderMain",
+            lockFile.getAbsolutePath()
+        );
+        pb.redirectErrorStream(false);
+        Process child = pb.start();
+
+        try {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(child.getInputStream(), StandardCharsets.UTF_8));
+            BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(child.getOutputStream(), StandardCharsets.UTF_8));
+
+            String status = null;
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if ("ACQUIRED".equals(line) || "FAILED".equals(line)) {
+                    status = line;
+                    break;
+                }
+            }
+            assertEquals("ACQUIRED", status, "Child process must acquire lock and signal ACQUIRED");
+            assertTrue(lockFile.exists(), "Persistent lock file must exist on disk");
+
+            // Main process attempts to acquire lock on the exact same path
+            PipelineDriver.PipelineLock competing = new PipelineDriver.PipelineLock(FileSystem.getLocal(new Configuration()), lockPath);
+            assertFalse(competing.tryAcquire("main_process_attempt"),
+                    "Competing process must NOT acquire lock while child process holds it");
+            assertTrue(PipelineDriver.isPipelineLocked(FileSystem.getLocal(new Configuration()), lockPath),
+                    "Lock probe must confirm lock is active");
+
+            // Signal child to release and wait for child termination
+            writer.write("RELEASE\n");
+            writer.flush();
+
+            String released = null;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if ("RELEASED".equals(line)) {
+                    released = line;
+                    break;
+                }
+            }
+            assertEquals("RELEASED", released);
+            child.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
+
+            // Child released: Lock file remains on disk as persistent coordination artifact
+            assertTrue(lockFile.exists(), "Persistent lock file must NEVER be deleted upon normal release");
+            assertFalse(PipelineDriver.isPipelineLocked(FileSystem.getLocal(new Configuration()), lockPath),
+                    "Probe must confirm lock is released after child exits");
+
+            // Subsequent process can now acquire the lock immediately on the existing file
+            assertTrue(competing.tryAcquire("main_process_retry"),
+                    "Subsequent process must acquire lock on the existing file after previous holder releases");
+            competing.close();
+            assertTrue(lockFile.exists(), "Lock file still remains on disk after second release");
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("Regression: Failed job releases lock and allows subsequent retry")
+    void testFailedJobReleasesLock(@TempDir File tempDir) throws Exception {
+        File inputFile = new File(tempDir, "events.csv");
+        assertTrue(inputFile.createNewFile());
+
+        File workDir = new File(tempDir, "work_fail_release");
+        assertTrue(workDir.mkdirs());
+
+        PipelineDriver driver = new PipelineDriver();
+        driver.setConf(new Configuration());
+        driver.setJobRunner((tool, args, conf) -> {
+            throw new RuntimeException("Simulated early job failure");
+        });
+
+        int exitCode = driver.run(new String[]{
+            "--input", inputFile.getAbsolutePath(),
+            "--work-dir", workDir.getAbsolutePath(),
+            "--force"
+        });
+        assertEquals(1, exitCode, "Driver must exit with code 1 on job failure");
+
+        Path lockPath = PipelineDriver.computeLockPath(new Path(workDir.getAbsolutePath()));
+        assertFalse(PipelineDriver.isPipelineLocked(FileSystem.getLocal(new Configuration()), lockPath),
+                "Lock must be released even when pipeline encounters an unhandled exception or job failure");
+
+        // Subsequent retry can acquire the lock immediately
+        PipelineDriver.PipelineLock retryLock = new PipelineDriver.PipelineLock(FileSystem.getLocal(new Configuration()), lockPath);
+        assertTrue(retryLock.tryAcquire("retry_run"), "Subsequent run must acquire lock after failure");
+        retryLock.close();
+    }
+
+    @Test
+    @DisplayName("Regression: HDFS fallback verifies marker ownership and prevents foreign marker deletion")
+    void testHdfsMarkerOwnershipProtection() throws Exception {
+        FileSystem mockFs = org.mockito.Mockito.mock(FileSystem.class);
+        Path hdfsLockPath = new Path("hdfs://namenode:9000/clickstream/work/.daily.pipeline.lock");
+
+        // Simulate Process A acquiring lock
+        org.mockito.Mockito.when(mockFs.createNewFile(hdfsLockPath)).thenReturn(true);
+        java.io.ByteArrayOutputStream bout = new java.io.ByteArrayOutputStream();
+        org.apache.hadoop.fs.FSDataOutputStream fsOut = new org.apache.hadoop.fs.FSDataOutputStream(bout, null);
+        org.mockito.Mockito.when(mockFs.create(hdfsLockPath, true)).thenReturn(fsOut);
+
+        PipelineDriver.PipelineLock procA = new PipelineDriver.PipelineLock(mockFs, hdfsLockPath);
+        assertTrue(procA.tryAcquire("run_A"), "Process A must acquire HDFS marker");
+        String procAData = bout.toString(StandardCharsets.UTF_8.name());
+        assertTrue(procAData.contains("owner=" + procA.getOwnerToken()));
+
+        // Process B attempts to acquire lock on the same path -> fails because createNewFile returns false
+        org.mockito.Mockito.when(mockFs.createNewFile(hdfsLockPath)).thenReturn(false);
+        PipelineDriver.PipelineLock procB = new PipelineDriver.PipelineLock(mockFs, hdfsLockPath);
+        assertFalse(procB.tryAcquire("run_B"), "Process B must fail to acquire while marker exists");
+
+        // Verify Process B closing does not delete Process A's marker
+        procB.close();
+        org.mockito.Mockito.verify(mockFs, org.mockito.Mockito.never()).delete(hdfsLockPath, false);
+
+        // Simulate Process A reading back its marker upon close
+        org.mockito.Mockito.when(mockFs.exists(hdfsLockPath)).thenReturn(true);
+        org.apache.hadoop.fs.FSDataInputStream fsIn = new org.apache.hadoop.fs.FSDataInputStream(
+            new org.apache.hadoop.fs.FSInputStream() {
+                private final java.io.ByteArrayInputStream bin = new java.io.ByteArrayInputStream(procAData.getBytes(StandardCharsets.UTF_8));
+                @Override public void seek(long pos) {}
+                @Override public long getPos() { return 0; }
+                @Override public boolean seekToNewSource(long targetPos) { return false; }
+                @Override public int read() { return bin.read(); }
+            }
+        );
+        org.mockito.Mockito.when(mockFs.open(hdfsLockPath)).thenReturn(fsIn);
+
+        // Process A closes and verifies marker ownership
+        procA.close();
+        org.mockito.Mockito.verify(mockFs, org.mockito.Mockito.times(1)).delete(hdfsLockPath, false);
     }
 }
 

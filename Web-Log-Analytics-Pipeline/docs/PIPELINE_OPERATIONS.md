@@ -163,7 +163,7 @@ When an error or invariant violation occurs, the metadata captures diagnostic de
 ### Features & Safety Guarantees
 - **Shell Hygiene:** Enforces `set -euo pipefail`.
 - **Mutual Exclusion (`flock`):** Acquires exclusive lock on `/tmp/clickstream_batch.lock` (override via `LOCK_FILE` environment variable or `--lock-file` flag). If locked by another run, exits immediately with code **`75`** (`EX_TEMPFAIL`) and logs `"already running"`.
-- **In-Directory Concurrency Guard (`.pipeline.lock`):** `PipelineDriver` creates `.pipeline.lock` in the target work directory during execution, preventing simultaneous executions targeting the same work directory from corrupting outputs.
+- **OS-Level Persistent Concurrency Guard (`parent/.<work_dir>.pipeline.lock`):** `PipelineDriver` coordinates mutual exclusion using a stable lock file located outside the recursively cleaned `work_dir` (`parent/.<work_dir_name>.pipeline.lock`). On local and mounted POSIX/Windows filesystems, it acquires an OS kernel-level exclusive file lock (`FileLock.tryLock()`) before pre-flight checks or `--force` cleanup. The lock file is **never deleted or replaced upon normal release**, treating the file as a persistent coordination rendezvous artifact to eliminate the race condition where unlinked files are replaced by concurrent invocations. On distributed HDFS filesystems where kernel locks do not cross nodes, an atomic NameNode marker (`fs.createNewFile()`) with cryptographic owner token verification ensures cooperative exclusion and prevents foreign marker deletion.
 - **Idempotent Reruns (NFR-05):** Before executing, `nightly_batch.sh` checks if `<work_dir>/run_meta.json` already records `"status": "SUCCESS"`. If so and `--force` was not requested, the run is skipped cleanly with exit code **`0`**, preserving all existing output data.
 - **Safe Single Retry Strategy (FR-SCH-08):**
   - If a fresh run fails mid-pipeline (e.g. at J3 or J5), the script automatically executes **1 retry** with `--force` to clean up its own failed attempt and rerun from J1.
@@ -188,8 +188,8 @@ To execute nightly batch runs automatically every night at 02:00 UTC:
 
 | Verification Scope | Status | Notes |
 |---|:---:|---|
-| **JUnit 5 Test Suite** | **PASS** | 196 tests passing across all packages; 0 failures. |
-| **JaCoCo Line Coverage** | **PASS** | **83.91%** overall line coverage (1,585/1,889 lines), above the ≥ 80% SRS threshold. Root package `edu.bigdata.clickstream` achieves **85.56%** (480/561 lines). |
+| **JUnit 5 Test Suite** | **PASS** | 201 tests passing across all packages; 0 failures. |
+| **JaCoCo Line Coverage** | **PASS** | **83.32%** overall line coverage (1,659/1,991 lines), above the ≥ 80% SRS threshold. Root package `edu.bigdata.clickstream` achieves **85.92%** line coverage. |
 | **Pandas Golden Baseline** | **PASS** | `verify_with_pandas.py --job all` passes all baseline invariants. |
 | **Python Ingestion Suite** | **PASS** | `test_data_ingestion.py` passes 7/7 tests. |
 | **Shell Test Suite** | **PASS** | `test_nightly_batch.sh` passes 8/8 tests (including lock collision exit code 75, crontab non-modification, and safe idempotency/retry). |

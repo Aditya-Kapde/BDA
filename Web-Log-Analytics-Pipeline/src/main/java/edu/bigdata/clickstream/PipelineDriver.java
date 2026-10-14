@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -621,6 +622,8 @@ public class PipelineDriver extends Configured implements Tool {
         private java.io.RandomAccessFile raf;
         private java.nio.channels.FileLock fileLock;
         private boolean acquired = false;
+        private boolean hdfsMarkerAcquired = false;
+        private String ownerToken;
 
         public PipelineLock(FileSystem fs, Path lockPath) {
             this.fs = fs;
@@ -629,6 +632,9 @@ public class PipelineDriver extends Configured implements Tool {
         }
 
         public boolean tryAcquire(String runId) {
+            this.ownerToken = UUID.randomUUID().toString() + "_" + (runId != null ? runId : "unknown");
+
+            // Preferred mode: OS-level kernel file locking on local or mounted POSIX/Windows filesystems
             if (localLockFile != null) {
                 try {
                     File parent = localLockFile.getParentFile();
@@ -636,23 +642,34 @@ public class PipelineDriver extends Configured implements Tool {
                         parent.mkdirs();
                     }
                     this.raf = new java.io.RandomAccessFile(localLockFile, "rw");
-                    this.fileLock = raf.getChannel().tryLock();
+                    try {
+                        this.fileLock = raf.getChannel().tryLock();
+                    } catch (java.nio.channels.OverlappingFileLockException e) {
+                        closeQuietly();
+                        return false;
+                    } catch (Throwable t) {
+                        closeQuietly();
+                        return false;
+                    }
                     if (this.fileLock == null) {
                         closeQuietly();
                         return false;
                     }
-                    raf.setLength(0);
-                    raf.write(("run_id=" + runId + "\ntimestamp=" + Instant.now() + "\n").getBytes(StandardCharsets.UTF_8));
+                    try {
+                        raf.setLength(0);
+                        raf.write(("owner=" + ownerToken + "\nrun_id=" + runId + "\ntimestamp=" + Instant.now() + "\n")
+                                .getBytes(StandardCharsets.UTF_8));
+                    } catch (Throwable ignored) {
+                    }
                     this.acquired = true;
                     return true;
-                } catch (java.nio.channels.OverlappingFileLockException e) {
-                    closeQuietly();
-                    return false;
                 } catch (Throwable t) {
-                    // Try Hadoop FileSystem createNewFile fallback
+                    closeQuietly();
+                    // Fall through to HDFS marker if local file lock attempt fails
                 }
             }
 
+            // HDFS fallback mode: Distributed filesystem marker using atomic NameNode createNewFile
             try {
                 if (fs != null) {
                     if (!fs.createNewFile(lockPath)) {
@@ -660,9 +677,10 @@ public class PipelineDriver extends Configured implements Tool {
                     }
                     try (BufferedWriter writer = new BufferedWriter(
                             new OutputStreamWriter(fs.create(lockPath, true), StandardCharsets.UTF_8))) {
-                        writer.write("run_id=" + runId + "\ntimestamp=" + Instant.now() + "\n");
+                        writer.write("owner=" + ownerToken + "\nrun_id=" + runId + "\ntimestamp=" + Instant.now() + "\n");
                     }
                     this.acquired = true;
+                    this.hdfsMarkerAcquired = true;
                     return true;
                 }
             } catch (Throwable t) {
@@ -679,31 +697,59 @@ public class PipelineDriver extends Configured implements Tool {
             return lockPath;
         }
 
+        public String getOwnerToken() {
+            return ownerToken;
+        }
+
         @Override
         public void close() {
             if (!acquired) {
                 return;
             }
-            try {
-                if (fileLock != null && fileLock.isValid()) {
-                    fileLock.release();
+            // 1. Release OS file lock if active
+            if (fileLock != null) {
+                try {
+                    if (fileLock.isValid()) {
+                        fileLock.release();
+                    }
+                } catch (Throwable ignored) {
                 }
-            } catch (Throwable ignored) {
+                fileLock = null;
             }
+            // 2. Close file channel / RandomAccessFile handle
             closeQuietly();
-            try {
-                if (fs != null && fs.exists(lockPath)) {
-                    fs.delete(lockPath, false);
+
+            // 3. PERSISTENT LOCK FILE GUARANTEE:
+            // Never delete or replace the localLockFile upon normal lock release!
+            // The file on disk serves as a permanent coordination rendezvous point for OS-level
+            // file locking (fcntl/flock/FileLock). Deleting the lock file introduces the race condition
+            // where Process B locks the unlinked file, Process C creates a replacement file at the same
+            // path, and Processes B and C execute concurrently with independent locks.
+
+            // 4. HDFS Marker Cleanup:
+            // Only if this process acquired an atomic HDFS marker file, verify marker ownership
+            // before deleting to ensure one process cannot remove another process's active marker.
+            if (hdfsMarkerAcquired && fs != null) {
+                try {
+                    if (fs.exists(lockPath)) {
+                        boolean ownsMarker = false;
+                        try (BufferedReader reader = new BufferedReader(
+                                new InputStreamReader(fs.open(lockPath), StandardCharsets.UTF_8))) {
+                            String firstLine = reader.readLine();
+                            if (firstLine != null && firstLine.contains(ownerToken)) {
+                                ownsMarker = true;
+                            }
+                        }
+                        if (ownsMarker) {
+                            fs.delete(lockPath, false);
+                        }
+                    }
+                } catch (Throwable ignored) {
                 }
-            } catch (Throwable ignored) {
             }
-            try {
-                if (localLockFile != null && localLockFile.exists()) {
-                    localLockFile.delete();
-                }
-            } catch (Throwable ignored) {
-            }
+
             this.acquired = false;
+            this.hdfsMarkerAcquired = false;
         }
 
         private void closeQuietly() {
@@ -723,18 +769,27 @@ public class PipelineDriver extends Configured implements Tool {
             return false;
         }
         File local = getLocalFile(lockPath);
-        if (local != null && local.exists()) {
+        if (local != null) {
+            if (!local.exists()) {
+                return false;
+            }
             try (java.io.RandomAccessFile testRaf = new java.io.RandomAccessFile(local, "rw");
                  java.nio.channels.FileLock testLock = testRaf.getChannel().tryLock()) {
                 if (testLock == null) {
-                    return true;
+                    return true; // Held exclusively by another active process
                 }
+                // Lock was successfully acquired by test probe, meaning no active process holds it.
+                testLock.release();
+                return false;
             } catch (java.nio.channels.OverlappingFileLockException e) {
-                return true;
-            } catch (Throwable ignored) {
+                return true; // Held exclusively by another thread within this JVM
+            } catch (Throwable t) {
+                // Access denied or mandatory lock held by active process
                 return true;
             }
         }
+
+        // HDFS fallback: Active marker file exists in HDFS
         try {
             if (fs != null && fs.exists(lockPath)) {
                 return true;

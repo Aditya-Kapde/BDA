@@ -392,19 +392,20 @@
 
 - **Audit Findings & Fixes**:
   1. *Unsafe Retry Overwrite in `nightly_batch.sh` (High)*: An unforced rerun against an existing directory caused attempt 1 to fail and attempt 2 to automatically inject `--force`, destroying data. **Fixed**: Added idempotency pre-check (skips existing `SUCCESS` run with code 0) and retry guard (refuses automatic `--force` when work-dir pre-existed).
-  2. *Lock Safety & Force Cleanup Race in `PipelineDriver.java` (High)*: Previously, `.pipeline.lock` was inside `work_dir`. When `--force` was passed, `workFs.delete(workPath, true)` deleted the entire work directory, destroying the lock file while held. Furthermore, `nightly_batch.sh` treated code 75 (lock collision) as a job failure and attempted an unprompted retry with `--force`. **Fixed**:
-     - Moved lock file to stable location outside `work_dir` (`computeLockPath(workPath)` -> `parent/.work_dir.pipeline.lock`).
-     - Added OS-level `FileChannel.tryLock()` via `PipelineLock` (`AutoCloseable`) to enforce process-level and JVM-level mutual exclusion across both direct Java and shell invocations.
-     - Enforced that lock acquisition occurs *before* pre-flight directory validation or `--force` cleanup.
+  2. *Lock Safety, Release Lifecycle & Process Isolation in `PipelineDriver.java` (High)*:
+     - Discovered and eliminated the Unix unlinked-file replacement race where releasing and deleting a lock file allows Process B to lock the unlinked file, Process C to create a replacement file at the same path, and B and C to execute concurrently.
+     - **Resolution:** Replaced ephemeral lock deletion with a **persistent coordination artifact** design. The stable lock file (`parent/.<work_dir>.pipeline.lock`) is **never deleted or replaced upon normal release**. Process termination/close releases the OS-level `FileLock` and closes the channel, keeping the inode stable.
+     - Added process-level verification via separate JVM execution (`ProcessBuilder`) confirming that competing processes are blocked while another process holds the lock, and that subsequent processes cleanly acquire the existing persistent lock file immediately upon release.
+     - Hardened HDFS fallback marker logic: Uses atomic NameNode RPC `fs.createNewFile()`, writes cryptographic owner tokens (`UUID + run_id`), and validates marker ownership prior to deletion to prevent a process from removing a foreign active marker.
      - Hardened `nightly_batch.sh` to immediately abort with exit code 75 on lock collision without retrying.
-     - Wrapped pipeline execution in strict `try-finally` ensuring lock file closure and deletion on success, invariant failures, job errors, and unhandled exceptions.
+     - Maintained full lifecycle coverage: Lock is acquired before pre-flight checks and `--force` cleanup, and released in `finally` upon success, job failures, invariant violations, or unhandled exceptions.
   3. *Unchecked Upstream Outputs (Medium)*: Missing or empty upstream directories caused raw `InvalidInputException` in downstream jobs. **Fixed**: Added `hasValidOutputFiles()` checks before J2, J4 Products, J4 Categories, and J6.
   4. *False SUCCESS on Metadata Failure (Medium)*: Early returns inside `try` masked metadata write exceptions in `finally`. **Fixed**: Converted to structured exit code management ensuring metadata write errors guarantee non-zero exit code.
   5. *Cron Installation Verification (Low)*: Verified that `--install-cron` is strictly informational and does not alter crontab. Added automated test.
   6. *Reconciliation Invariant Verification*: Mathematically and empirically confirmed `SUM(J1 valid total + J1 malformed total) == TOTAL_RECORDS - HEADER_SKIPPED` using actual Hadoop counters without double-counting.
 - **Verification Evidence**:
-  - Full Java test suite: **198/198 JUnit 5 tests passing** (including 6 dedicated lock lifecycle & concurrency regression tests).
-  - Overall line coverage: **82.58%** (1,626/1,969 lines) across all 40 classes (exceeding 80% threshold).
+  - Full Java test suite: **201/201 JUnit 5 tests passing** (including separate OS process test `testSeparateProcessMutualExclusion` and HDFS marker test `testHdfsMarkerOwnershipProtection`).
+  - Overall line coverage: **83.32%** (1,659/1,991 lines) across all 40 classes (comfortably exceeding 80% threshold).
   - Shell automation suite: **8/8 tests passing** in `tests/test_nightly_batch.sh`.
   - Ingestion suite: **7/7 tests passing** in `tests/test_data_ingestion.py`.
   - Pandas baseline verification: **PASS** (`python scripts/verify_with_pandas.py --job all`).
