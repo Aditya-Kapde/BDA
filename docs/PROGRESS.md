@@ -499,11 +499,90 @@
 
 ---
 
+### Phase 6: Live Hadoop/YARN Deployment & Smoke Test (Milestone M10)
+
+#### Milestone M10: Live Cluster Integration Audit & Controlled Smoke Test
+- [x] **Read-Only Preflight Deployment Validation**:
+  - Validated Docker Compose service names (`hdfs-namenode`, `hdfs-datanode`, `yarn-resourcemanager`, `yarn-nodemanager`, `historyserver`) and container mappings.
+  - Verified host JAR: `target/clickstream-mr-1.0.jar` (86,688 bytes, 44 compiled classes).
+  - Confirmed JAR is located on the host filesystem and not mounted in `docker-compose.yml`.
+  - Audited CLI contracts for `PipelineDriver`, `export_reports.py`, and `verify_with_pandas.py`.
+  - Documented ingestion contract mismatch: `scripts/ingest_to_hdfs.sh` expects `$LOCAL_DIR/dt=*` partitions, necessitating `split_by_day.py` on `mini_clickstream.csv` prior to running the ingestion script.
+- [x] **Cluster Startup Execution (`docker compose up -d`)**:
+  - Docker Desktop 29.7.2 active on WSL2 Linux (12 CPUs, 7.41 GB RAM).
+  - Successfully pulled official image `apache/hadoop:3.3.6`.
+  - Successfully created volumes `clickstream-hdfs-nn-data`, `clickstream-hdfs-dn-data`, and network `clickstream-hadoopnet`.
+  - Containers created: `hdfs-namenode`, `hdfs-datanode`, `yarn-resourcemanager`, `yarn-nodemanager`, `historyserver`.
+- [x] **Failure Isolation & Blocker Identification (Stop Condition)**:
+  - First failing stage identified: Container `hdfs-namenode` exited with code 1.
+  - Dependent services (`hdfs-datanode`, `yarn-resourcemanager`) held in `Created` state waiting for healthy NameNode.
+  - NameNode log diagnostic:
+    `org.apache.hadoop.hdfs.server.common.InconsistentFSStateException: Directory /hadoop/dfs/name is in an inconsistent state: storage directory does not exist or is not accessible.`
+  - **Root Cause 1**: Path mismatch between `conf/hdfs-site.xml` (`file:///hadoop/dfs/name`, `file:///hadoop/dfs/data`) and `docker-compose.yml` (`/opt/hadoop/dfs/name`, `/opt/hadoop/dfs/data`).
+  - **Root Cause 2**: Unformatted NameNode storage volume; `ENSURE_NAMENODE_DIR` environment variable was not declared in `docker-compose.yml` to instruct `/opt/starter.sh` to execute `hdfs namenode -format -force`.
+  - **Safety Action**: Execution stopped immediately before proceeding to dependent stages (J1–J6 submission, report export, pandas verification, dashboard) per Safety Rule.
+- [x] **Audit Traceability Summary**:
+  - **Local Tests Previously Passed**: 201 Java JUnit 5 tests (83.32% line coverage), 8 bash tests, 7 ingestion tests, 12 exporter tests, 10 dashboard tests, pandas golden baseline (`ALL CHECKS PASSED`).
+  - **Live Checks Actually Executed and Passed**: Host Docker engine connectivity, JAR artifact integrity, image pull, volume/network initialization.
+  - **Checks That Failed**: NameNode live container startup (`InconsistentFSStateException`).
+  - **Checks That Remain Pending**: Live HDFS safe mode verification, NodeManager registration, YARN queue status, end-to-end MapReduce execution (J1–J6) on live YARN cluster, live report export, live pandas verification against cluster outputs, and live dashboard launch.
+
+---
+
+### Phase 7: HDFS Storage Path Repair & Safe NameNode Bootstrap (Milestone M10.1) (DONE)
+
+#### Milestone M10.1: HDFS Infrastructure Validation
+- [x] **Path & Permissions Alignment**:
+  - Updated `conf/hdfs-site.xml` `dfs.namenode.name.dir` to `file:///opt/hadoop/dfs/name` and `dfs.datanode.data.dir` to `file:///opt/hadoop/dfs/data`, aligning with Compose persistent volume mounts.
+  - Inspected `clickstream-hdfs-nn-data` and `clickstream-hdfs-dn-data` volumes: confirmed 100% empty (freshly initialized, 0 bytes, no existing metadata).
+  - Aligned ownership of named volumes to `hadoop:users` (1000:100); confirmed write access for non-root container user `hadoop`.
+- [x] **Safe, Idempotent Bootstrap Configuration**:
+  - Added `ENSURE_NAMENODE_DIR=/opt/hadoop/dfs/name/current` to `docker-compose.yml`.
+  - Verified mechanism in `/opt/starter.sh`: checks `[ ! -d "$ENSURE_NAMENODE_DIR" ]`. Because `current/` was missing on the empty volume, a one-time format was performed. Once `current/` is created, subsequent restarts evaluate to false and skip formatting.
+- [x] **HDFS Infrastructure Live Validation**:
+  - `hdfs-namenode` started and achieved status `Up (healthy)` on ports 19870 (Web UI) and 9000 (RPC).
+  - `hdfs-datanode` started and successfully registered with NameNode.
+  - Verified safe mode: `hdfs dfsadmin -safemode get` returns `Safe mode is OFF`.
+  - Verified filesystem operations: `hdfs dfs -mkdir`, `-ls`, and `-rm -r` executed cleanly.
+  - Verified DataNode report: `hdfs dfsadmin -report` reports 1 live DataNode (`172.18.0.3:9866`, 951.35 GB remaining).
+  - Verified restart idempotency & namespace persistence: restarted `hdfs-namenode`; logs confirmed edit log replay (txid 1–4) without re-formatting; marker directory persisted.
+- [x] **Prerequisites for MapReduce Execution**:
+  - `target/clickstream-mr-1.0.jar` remains unmounted in Compose and must be copied/mounted before YARN submission. (Resolved in M10.2).
+  - YARN ResourceManager and NodeManager validation remain pending. (Resolved in M10.2).
+
+---
+
+### Phase 8: YARN Health, Capacity Scheduler & JAR Delivery (Milestone M10.2) (DONE)
+
+#### Milestone M10.2: YARN Validation & Safe Artifact Delivery
+- [x] **YARN Configuration & Network Endpoint Alignment**:
+  - Added `HADOOP_CONF_DIR=/etc/hadoop` to `yarn-resourcemanager`, `yarn-nodemanager`, and `historyserver` in `docker-compose.yml`.
+  - Added `yarn.resourcemanager.webapp.address = 0.0.0.0:8088` to `conf/yarn-site.xml`, binding the Web UI and healthchecks to all container interfaces.
+- [x] **Live YARN Cluster Validation**:
+  - Started `yarn-resourcemanager`, `yarn-nodemanager`, and `historyserver`; all 5 cluster containers up and running.
+  - `yarn-resourcemanager` achieved `Up (healthy)`.
+  - `yarn-nodemanager` registered with RM (`<memory:5120, vCores:8>`).
+  - `yarn node -list` verified 1 live node (`yarn-nodemanager:38377`, state `RUNNING`).
+  - Capacity Scheduler verified via `yarn queue -status batch` (70.00% capacity, state `RUNNING`) and `yarn queue -status default` (30.00% capacity, state `RUNNING`).
+  - HDFS reachability from YARN verified via `docker exec yarn-resourcemanager hdfs dfs -ls /` (connected to `hdfs://hdfs-namenode:9000`).
+- [x] **Safe Artifact Delivery & Checksum Verification**:
+  - Verified host JAR: `target/clickstream-mr-1.0.jar` (86,688 bytes).
+  - Host SHA-256: `3636e29c68867ab39944797dfdaab8fb564adc5702c3134e6313d0aded2475f2`.
+  - Copied artifact to `yarn-resourcemanager:/opt/hadoop/clickstream-mr-1.0.jar`.
+  - Container SHA-256: `3636e29c68867ab39944797dfdaab8fb564adc5702c3134e6313d0aded2475f2` (**Exact 100% match**).
+- [x] **Submission Readiness & Blocker Isolation**:
+  - Submission container has access to application JAR, NameNode RPC, ResourceManager RPC endpoints, and HDFS namespace.
+  - **Identified Blocker**: Bytecode version incompatibility. `target/clickstream-mr-1.0.jar` was compiled with Java 11 (class file version 55.0), whereas `apache/hadoop:3.3.6` runtime is OpenJDK 8 (`1.8.0_212-b04`, class file version 52.0). Invoking `hadoop jar` throws `UnsupportedClassVersionError: class file version 55.0 ... only recognizes up to 52.0`.
+  - Safe Action: JAR preserved as-is without rebuilding or code edits per M10.2 constraints. Re-compiling for Java 8 bytecode or container JVM upgrade scheduled for M10.3.
+
+---
+
 ## Upcoming Milestones
 
 | Milestone | Target | Requirements |
 |---|---|---|
-| **M10** | Final Documentation & Wrap-up | `docs/benchmarks.md`, `docs/final-report.md`, `docs/demo-script.md`. |
+| **M10.3** | Java 8 Bytecode Alignment & End-to-End Fixture Run | Compile for release 8 bytecode, submit `PipelineDriver` on YARN (`batch` queue), export reports, verify with pandas. |
+| **M10 Wrap-up** | Final Documentation | `docs/benchmarks.md`, `docs/final-report.md`, `docs/demo-script.md`. |
 
 
 

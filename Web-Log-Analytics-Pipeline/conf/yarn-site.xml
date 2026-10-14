@@ -6,6 +6,10 @@
         <value>yarn-resourcemanager</value>
     </property>
     <property>
+        <name>yarn.resourcemanager.webapp.address</name>
+        <value>0.0.0.0:8088</value>
+    </property>
+    <property>
         <name>yarn.resourcemanager.scheduler.class</name>
         <value>org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler</value>
         <description>Authoritative scheduler class for dedicated batch queue.</description>

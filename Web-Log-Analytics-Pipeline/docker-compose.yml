@@ -34,6 +34,7 @@ services:
     environment:
       - HADOOP_CONF_DIR=/etc/hadoop
       - CLUSTER_NAME=clickstream-cluster
+      - ENSURE_NAMENODE_DIR=/opt/hadoop/dfs/name/current
     ports:
       - "19870:9870"
       - "9000:9000"
@@ -79,6 +80,8 @@ services:
     depends_on:
       hdfs-namenode:
         condition: service_healthy
+    environment:
+      - HADOOP_CONF_DIR=/etc/hadoop
     ports:
       - "8088:8088"
     volumes:
@@ -106,6 +109,8 @@ services:
     depends_on:
       yarn-resourcemanager:
         condition: service_healthy
+    environment:
+      - HADOOP_CONF_DIR=/etc/hadoop
     ports:
       - "8042:8042"
     volumes:
@@ -127,6 +132,8 @@ services:
     depends_on:
       yarn-resourcemanager:
         condition: service_healthy
+    environment:
+      - HADOOP_CONF_DIR=/etc/hadoop
     ports:
       - "19888:19888"
     volumes:

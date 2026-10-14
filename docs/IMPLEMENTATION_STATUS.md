@@ -170,10 +170,115 @@ All functional and non-functional requirements below are assessed against the au
 ## 5. Host & Platform Risks & Constraints
 
 1. **Docker Daemon Status**:
-   - Execution of `docker ps` revealed that Docker Desktop is currently stopped (`failed to connect to docker API`). Docker must be started before launching containers.
+   - Docker Desktop is active and accessible via Docker Engine 29.7.2 (WSL2, 12 CPUs, 7.41 GiB RAM).
 2. **Build Tooling on Host**:
    - `mvn` is not installed on the Windows host PATH.
    - Windows host has OpenJDK 21, whereas Hadoop 3.3.6 requires Java 11 for compilation and runtime compatibility.
-   - *Mitigation:* Maven builds can be executed via a dedicated Maven/Java 11 Docker container or within the WSL2 Ubuntu environment after installing `openjdk-11-jdk` and `maven`.
+   - *Mitigation:* Maven builds are executed via WSL2 Ubuntu environment or packaged JARs (`target/clickstream-mr-1.0.jar` verified: 86,688 bytes).
 3. **Memory Baseline (8 GB / 12 GB Target)**:
    - Retiring Airflow (5 containers) and Spark saves ~6 GB of RAM, leaving ample headroom for HDFS and YARN.
+
+---
+
+## 6. Live Hadoop/YARN Deployment & Smoke Test Audit (Milestone M10)
+
+Live integration testing of the Hadoop 3.3.6 Compose stack was initiated per M10 specifications.
+
+### 6.1 Execution Evidence & Stage Traceability
+
+| Stage | Operation | Command Executed | Result / Output | Status |
+|---|---|---|---|:---:|
+| **Preflight** | Host Docker check | `docker ps` / `docker info` | Docker Desktop 29.7.2 running (WSL2 Linux, 12 CPUs, 7.41 GB RAM) | **PASS** |
+| **Preflight** | JAR verification | `Get-Item target\clickstream-mr-1.0.jar` | Built JAR verified present (86,688 bytes, 44 classes) | **PASS** |
+| **Preflight** | Exporter CLI audit | Inspect `scripts/export_reports.py` | Verified arguments (`--run-id`, `--work-dir`, `--reports-dir`, `--force`, `--hadoop-version`) and layout | **PASS** |
+| **Preflight** | Verifier CLI audit | Inspect `scripts/verify_with_pandas.py` | Verified arguments (`--csv`, `--job`, `--topn`, `--reports-dir`, `--mr-output`, etc.) | **PASS** |
+| **Preflight** | Ingestion Contract | Inspect `scripts/ingest_to_hdfs.sh` | Requires `dt=*` partition directory; `mini_clickstream.csv` requires `split_by_day.py` partitioning first | **DOCUMENTED** |
+| **Step 2** | Launch Compose Cluster | `docker compose up -d` | Image `apache/hadoop:3.3.6` pulled, volumes & network created, containers created | **PARTIAL** |
+| **Step 2** | Container Startup | `docker compose ps -a` | `hdfs-namenode` exited with code 1; dependents held in `Created` | **FAIL** |
+| **Step 2** | NameNode Log Inspection | `docker logs hdfs-namenode` | `InconsistentFSStateException: Directory /hadoop/dfs/name is in an inconsistent state: storage directory does not exist or is not accessible` | **FAIL (BLOCKER)** |
+| **Step 3** | J1–J6 Pipeline Execution | Blocked by Step 2 failure | Stopped per Safety Rule: Halt before dependent stages | **PENDING** |
+| **Step 4** | Repeat-run Safety | Blocked by Step 2 failure | Stopped per Safety Rule: Halt before dependent stages | **PENDING** |
+| **Step 5** | Live Dashboard Launch | Blocked by Step 2 failure | Stopped per Safety Rule: Halt before dependent stages | **PENDING** |
+
+### 6.2 Identified Deployment Blockers & Root Causes (from M10)
+
+1. **Storage Path Mismatch & Unformatted NameNode**:
+   - `conf/hdfs-site.xml` specified `dfs.namenode.name.dir = file:///hadoop/dfs/name` and `dfs.datanode.data.dir = file:///hadoop/dfs/data`.
+   - `docker-compose.yml` mounts persistent volumes to `/opt/hadoop/dfs/name` and `/opt/hadoop/dfs/data`.
+   - In `apache/hadoop:3.3.6`, `/opt/starter.sh` expects `ENSURE_NAMENODE_DIR` to format an uninitialized volume, checking `[ ! -d "$ENSURE_NAMENODE_DIR" ]`. Setting it to `/opt/hadoop/dfs/name/current` formats on first startup and skips formatting when `current/` exists.
+   - Volumes were owned by `root:root` (mode 755), preventing user `hadoop` (uid 1000) from writing.
+2. **JAR Accessibility Inside Container**:
+   - `docker-compose.yml` only mounts `./conf/*` into `/etc/hadoop/*`. The application JAR `target/clickstream-mr-1.0.jar` is on the host filesystem and is not mounted inside the container. It must either be copied (`docker cp`) or mounted into `yarn-resourcemanager` before MapReduce execution.
+3. **Partition Directory Ingestion Requirement**:
+   - `scripts/ingest_to_hdfs.sh` iterates over `$LOCAL_DIR/dt=*`. Uploading a single flat fixture (`mini_clickstream.csv`) directly requires first running `split_by_day.py` to generate the partitioned directory structure or using direct `hdfs dfs -put`.
+
+---
+
+## 7. Milestone M10.1: HDFS Storage Path Repair & Safe NameNode Bootstrap
+
+Milestone M10.1 resolved the HDFS storage path mismatch and safely initialized HDFS NameNode and DataNode.
+
+### 7.1 Configuration & Infrastructure Changes
+
+1. **Storage Path Alignment (`conf/hdfs-site.xml`)**:
+   - Updated `dfs.namenode.name.dir` to `file:///opt/hadoop/dfs/name`.
+   - Updated `dfs.datanode.data.dir` to `file:///opt/hadoop/dfs/data`.
+   - Result: Exactly matches `docker-compose.yml` persistent volume mount targets.
+2. **Safe Idempotent NameNode Formatting (`docker-compose.yml`)**:
+   - Added `ENSURE_NAMENODE_DIR=/opt/hadoop/dfs/name/current` to `hdfs-namenode` environment.
+   - Mechanism: `/opt/starter.sh` tests `[ ! -d "$ENSURE_NAMENODE_DIR" ]`. On a fresh volume, `current/` is missing, triggering a one-time format. Once formatted, `current/` exists, guaranteeing subsequent container restarts never re-format or corrupt existing namespace metadata.
+3. **Volume Permission Alignment**:
+   - Inspected volumes `clickstream-hdfs-nn-data` and `clickstream-hdfs-dn-data`: confirmed 100% empty (freshly initialized, 0 bytes, no existing metadata).
+   - Set ownership of `/opt/hadoop/dfs/name` and `/opt/hadoop/dfs/data` on the persistent named volumes to `hadoop:users` (1000:100). Verified write access for `user: hadoop`.
+
+### 7.2 Validation Evidence
+
+| Check | Command Executed | Verified Evidence | Status |
+|---|---|---|:---:|
+| **NameNode Container Health** | `docker compose ps` | Container `hdfs-namenode` status: `Up (healthy)`, port 19870/9870 and 9000 bound | **PASS** |
+| **DataNode Container Health** | `docker compose ps` | Container `hdfs-datanode` status: `Up`, registered with NameNode | **PASS** |
+| **NameNode Logs** | `docker logs hdfs-namenode` | Loaded FSImage from `/opt/hadoop/dfs/name/current`, left safe mode after 0 s, 0 errors | **PASS** |
+| **Safe Mode Status** | `docker exec hdfs-namenode hdfs dfsadmin -safemode get` | Returns `Safe mode is OFF` (exit code 0) | **PASS** |
+| **HDFS Operations** | `hdfs dfs -mkdir`, `-ls`, `-rm` | Verified directory creation, listing, and recursive deletion on active filesystem | **PASS** |
+| **DataNode Registration** | `docker exec hdfs-namenode hdfs dfsadmin -report` | `Live datanodes (1): 172.18.0.3:9866 (hdfs-datanode)`, 951.35 GB remaining | **PASS** |
+| **Namespace Persistence on Restart** | `docker restart hdfs-namenode` | NameNode restarted; replayed edits 1–4, skipped re-formatting, persisted marker directory across container restart | **PASS** |
+
+### 7.3 Prerequisites for Subsequent MapReduce Milestones
+
+1. **YARN Cluster Validation**: Completed in Milestone M10.2.
+2. **JAR Delivery**: Completed in Milestone M10.2.
+
+---
+
+## 8. Milestone M10.2: YARN Health, Capacity Scheduler & JAR Delivery
+
+Milestone M10.2 validated YARN cluster health, verified Capacity Scheduler queue allocations, safely delivered the application JAR, and validated submission readiness.
+
+### 8.1 Configuration & Environment Alignments
+
+1. **YARN Configuration Directory (`docker-compose.yml`)**:
+   - Added `HADOOP_CONF_DIR=/etc/hadoop` to `yarn-resourcemanager`, `yarn-nodemanager`, and `historyserver`.
+   - Ensures YARN daemons read mounted cluster configuration files (`yarn-site.xml`, `mapred-site.xml`, `capacity-scheduler.xml`) instead of falling back to default image templates.
+2. **ResourceManager Web Endpoint (`conf/yarn-site.xml`)**:
+   - Added `yarn.resourcemanager.webapp.address = 0.0.0.0:8088`.
+   - Allows Web UI and healthchecks to bind across all container interfaces, enabling `curl http://localhost:8088/cluster` to return HTTP 200 OK.
+
+### 8.2 Live Validation Evidence
+
+| Check | Target | Command Executed | Verified Evidence | Status |
+|---|---|---|---|:---:|
+| **ResourceManager Health** | Container & Web UI | `docker compose ps yarn-resourcemanager`<br>`curl -s http://localhost:8088/cluster` | Container `Up (healthy)`. Web UI HTTP 200 OK with Capacity Scheduler | **PASS** |
+| **NodeManager Health** | Container & Daemon | `docker logs yarn-nodemanager` | Registered with RM as `yarn-nodemanager:38377` with `<memory:5120, vCores:8>` | **PASS** |
+| **NodeManager Registration** | Cluster Membership | `docker exec yarn-resourcemanager yarn node -list` | `Total Nodes: 1`, `Node-State: RUNNING`, `Node-Http-Address: yarn-nodemanager:8042` | **PASS** |
+| **Capacity Scheduler Queues** | Queue Allocations | `yarn queue -status batch`<br>`yarn queue -status default` | **`batch`**: `State: RUNNING`, `Capacity: 70.00%`, `Max: 100.00%`<br>**`default`**: `State: RUNNING`, `Capacity: 30.00%`, `Max: 100.00%` | **PASS** |
+| **HDFS Connectivity from YARN** | `fs.defaultFS` | `docker exec yarn-resourcemanager hdfs dfs -ls /` | Connected to `hdfs://hdfs-namenode:9000`; listed `/tmp` cleanly | **PASS** |
+| **JAR Delivery & Integrity** | Delivery Checksums | Host: `Get-FileHash target\clickstream-mr-1.0.jar`<br>Container: `sha256sum /opt/hadoop/clickstream-mr-1.0.jar` | **Exact SHA-256 match**:<br>`3636e29c68867ab39944797dfdaab8fb564adc5702c3134e6313d0aded2475f2` (86,688 bytes, mode `-rwxr-xr-x`) | **PASS** |
+| **Submission Readiness (Connectivity)** | YARN Client | `hadoop jar ... PipelineDriver` | YARN RPC endpoints `:8032`, `:8030`, `:8031`, `:8033`, HDFS RPC `:9000` accessible | **PASS** |
+
+### 8.3 Blocker Identified for Subsequent Milestone (M10.3 / MapReduce Execution)
+
+- **Java Bytecode Version Incompatibility**:
+  - `target/clickstream-mr-1.0.jar` was compiled with Java 11 (class file version 55.0).
+  - The runtime JVM inside `apache/hadoop:3.3.6` is OpenJDK 8 (`1.8.0_212-b04`, class file version 52.0).
+  - Attempting to load `edu.bigdata.clickstream.PipelineDriver` throws `java.lang.UnsupportedClassVersionError: class file version 55.0, this version of the Java Runtime only recognizes class file versions up to 52.0`.
+  - In strict compliance with M10.2 rules (*"Do not rebuild the JAR or modify Java code merely to make delivery work"*), the JAR was delivered as-is and verified. For Milestone M10.3, the JAR must be compiled to target Java 8 bytecode (`<maven.compiler.release>8</maven.compiler.release>` / `<release>8</release>`) or a Java 11 Hadoop container runtime must be used.
