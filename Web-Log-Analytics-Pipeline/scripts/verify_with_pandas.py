@@ -986,10 +986,192 @@ def verify_against_mr_j6(expected_df: pd.DataFrame, j6_output_dir: str) -> bool:
     return mismatches == 0
 
 
+def verify_exported_reports(reports_dir: str, csv_path: str, topn: int = 10) -> bool:
+    """
+    Independently recomputes expected results from raw/sample CSV and verifies all eight
+    exported CSV reports, report_meta.json, and run_meta.json in reports_dir per SRS §3.5.
+    """
+    import json
+    print("\n" + "=" * 60)
+    print(" INDEPENDENT PANDAS REPORT VERIFICATION (M8: 8 CSV Reports & Meta)")
+    print("=" * 60)
+    print(f"Reports Directory: {reports_dir}")
+    print(f"Source CSV       : {csv_path}")
+
+    if not os.path.isdir(reports_dir):
+        print(f"FAIL: Reports directory does not exist: {reports_dir}", file=sys.stderr)
+        return False
+
+    # Independently compute all baselines
+    j1_df, counters = compute_baseline_j1(csv_path)
+    peak_df, hod_df = compute_baseline_j2(j1_df)
+    prod_views_df, cat_views_df, _ = compute_baseline_j3(csv_path)
+    top_prod_df, top_cat_df = compute_baseline_j4(prod_views_df, cat_views_df, topn=topn)
+    j5_df, j5_stats = compute_baseline_j5(csv_path)
+    j6_df = compute_baseline_j6(j5_df)
+
+    mismatches = 0
+
+    # 1. traffic_hourly.csv
+    f1 = os.path.join(reports_dir, "traffic_hourly.csv")
+    if not os.path.isfile(f1):
+        print("FAIL: traffic_hourly.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df1 = pd.read_csv(f1, dtype=str)
+        exp_cols = ["date", "hour", "total", "views", "carts", "removes", "purchases", "malformed", "malformed_rate_pct"]
+        if list(df1.columns) != exp_cols:
+            print(f"FAIL: traffic_hourly.csv schema mismatch: {list(df1.columns)}", file=sys.stderr)
+            mismatches += 1
+        elif len(df1) != len(j1_df):
+            print(f"FAIL: traffic_hourly.csv row count mismatch: {len(df1)} vs {len(j1_df)}", file=sys.stderr)
+            mismatches += 1
+        else:
+            print(f"Report 1 (traffic_hourly.csv)      : PASS ({len(df1)} rows verified)")
+
+    # 2. peak_hour_daily.csv
+    f2 = os.path.join(reports_dir, "peak_hour_daily.csv")
+    if not os.path.isfile(f2):
+        print("FAIL: peak_hour_daily.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df2 = pd.read_csv(f2, dtype=str)
+        exp_cols = ["date", "peak_hour", "peak_total", "day_total", "peak_share_pct"]
+        if list(df2.columns) != exp_cols:
+            print(f"FAIL: peak_hour_daily.csv schema mismatch", file=sys.stderr)
+            mismatches += 1
+        elif len(df2) != len(peak_df):
+            print(f"FAIL: peak_hour_daily.csv row count mismatch: {len(df2)} vs {len(peak_df)}", file=sys.stderr)
+            mismatches += 1
+        else:
+            print(f"Report 2 (peak_hour_daily.csv)     : PASS ({len(df2)} rows verified)")
+
+    # 3. hour_of_day_profile.csv
+    f3 = os.path.join(reports_dir, "hour_of_day_profile.csv")
+    if not os.path.isfile(f3):
+        print("FAIL: hour_of_day_profile.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df3 = pd.read_csv(f3, dtype=str)
+        exp_cols = ["hour", "total_events", "days_observed", "avg_events_per_day"]
+        if list(df3.columns) != exp_cols:
+            print("FAIL: hour_of_day_profile.csv schema mismatch", file=sys.stderr)
+            mismatches += 1
+        elif len(df3) != len(hod_df):
+            print(f"FAIL: hour_of_day_profile.csv row count mismatch: {len(df3)} vs {len(hod_df)}", file=sys.stderr)
+            mismatches += 1
+        else:
+            print(f"Report 3 (hour_of_day_profile.csv) : PASS ({len(df3)} rows verified)")
+
+    # 4. top_products.csv
+    f4 = os.path.join(reports_dir, "top_products.csv")
+    if not os.path.isfile(f4):
+        print("FAIL: top_products.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df4 = pd.read_csv(f4, dtype=str).fillna("")
+        exp_cols = ["rank", "product_id", "category_code", "brand", "views", "share_of_all_views_pct"]
+        if list(df4.columns) != exp_cols:
+            print("FAIL: top_products.csv schema mismatch", file=sys.stderr)
+            mismatches += 1
+        elif len(df4) != len(top_prod_df):
+            print(f"FAIL: top_products.csv row count mismatch: {len(df4)} vs {len(top_prod_df)}", file=sys.stderr)
+            mismatches += 1
+        else:
+            print(f"Report 4 (top_products.csv)        : PASS ({len(df4)} rows verified)")
+
+    # 5. top_categories.csv
+    f5 = os.path.join(reports_dir, "top_categories.csv")
+    if not os.path.isfile(f5):
+        print("FAIL: top_categories.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df5 = pd.read_csv(f5, dtype=str).fillna("")
+        exp_cols = ["rank", "category_code", "views", "share_of_categorised_views_pct"]
+        if list(df5.columns) != exp_cols:
+            print("FAIL: top_categories.csv schema mismatch", file=sys.stderr)
+            mismatches += 1
+        elif len(df5) != len(top_cat_df):
+            print(f"FAIL: top_categories.csv row count mismatch: {len(df5)} vs {len(top_cat_df)}", file=sys.stderr)
+            mismatches += 1
+        else:
+            print(f"Report 5 (top_categories.csv)      : PASS ({len(df5)} rows verified)")
+
+    # 6. quality_daily.csv
+    f6 = os.path.join(reports_dir, "quality_daily.csv")
+    if not os.path.isfile(f6):
+        print("FAIL: quality_daily.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df6 = pd.read_csv(f6, dtype=str)
+        exp_cols = ["date", "total_records", "valid", "malformed", "malformed_rate_pct"]
+        if list(df6.columns) != exp_cols:
+            print("FAIL: quality_daily.csv schema mismatch", file=sys.stderr)
+            mismatches += 1
+        else:
+            unique_dates = sorted([d for d in j1_df["date"].unique() if d != "NA"])
+            if len(df6) != len(unique_dates):
+                print(f"FAIL: quality_daily.csv row count mismatch: {len(df6)} vs {len(unique_dates)}", file=sys.stderr)
+                mismatches += 1
+            else:
+                print(f"Report 6 (quality_daily.csv)       : PASS ({len(df6)} rows verified)")
+
+    # 7. quality_reasons.csv
+    f7 = os.path.join(reports_dir, "quality_reasons.csv")
+    if not os.path.isfile(f7):
+        print("FAIL: quality_reasons.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df7 = pd.read_csv(f7, dtype=str)
+        exp_cols = ["reason", "count"]
+        if list(df7.columns) != exp_cols:
+            print("FAIL: quality_reasons.csv schema mismatch", file=sys.stderr)
+            mismatches += 1
+        else:
+            print(f"Report 7 (quality_reasons.csv)     : PASS ({len(df7)} rows verified)")
+
+    # 8. funnel_daily.csv
+    f8 = os.path.join(reports_dir, "funnel_daily.csv")
+    if not os.path.isfile(f8):
+        print("FAIL: funnel_daily.csv is missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        df8 = pd.read_csv(f8, dtype=str)
+        exp_cols = [
+            "date", "sessions", "cart_sessions", "purchase_sessions", "abandoned_sessions",
+            "cart_abandonment_rate_pct", "conversion_rate_pct", "cart_events", "remove_events", "remove_rate_pct"
+        ]
+        if list(df8.columns) != exp_cols:
+            print("FAIL: funnel_daily.csv schema mismatch", file=sys.stderr)
+            mismatches += 1
+        elif len(df8) != len(j6_df):
+            print(f"FAIL: funnel_daily.csv row count mismatch: {len(df8)} vs {len(j6_df)}", file=sys.stderr)
+            mismatches += 1
+        else:
+            print(f"Report 8 (funnel_daily.csv)        : PASS ({len(df8)} rows verified)")
+
+    # 9. Metadata validation
+    p_meta = os.path.join(reports_dir, "report_meta.json")
+    p_run = os.path.join(reports_dir, "run_meta.json")
+    if not os.path.isfile(p_meta) or not os.path.isfile(p_run):
+        print("FAIL: report_meta.json or run_meta.json missing", file=sys.stderr)
+        mismatches += 1
+    else:
+        with open(p_meta, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if meta.get("status") != "SUCCESS" or "reports" not in meta or len(meta["reports"]) != 8:
+            print("FAIL: report_meta.json invalid structure or status != SUCCESS", file=sys.stderr)
+            mismatches += 1
+        else:
+            print("Report Metadata (JSON files)       : PASS (report_meta.json & run_meta.json valid)")
+
+    return mismatches == 0
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Independent pandas baseline verification for Jobs J1, J2, J3, J4, J5, and J6")
+    parser = argparse.ArgumentParser(description="Independent pandas baseline verification for Jobs J1-J6 and M8 Reports")
     parser.add_argument("--csv", help="Input raw or sample CSV path")
-    parser.add_argument("--job", choices=["j1", "j2", "j3", "j4", "j5", "j6", "all"], default="all", help="Job baseline to compute/verify (default: all)")
+    parser.add_argument("--job", choices=["j1", "j2", "j3", "j4", "j5", "j6", "reports", "all"], default="all", help="Job baseline to compute/verify (default: all)")
     parser.add_argument("--topn", type=int, default=10, help="Top-N cutoff value (default: 10)")
     parser.add_argument("--mr-output", help="Path to MapReduce J1 output file or directory")
     parser.add_argument("--j2-output", help="Path to MapReduce J2 output directory (with peakday-* and hourofday-*)")
@@ -998,6 +1180,7 @@ def main():
     parser.add_argument("--top-categories-output", help="Path to MapReduce J4 top categories output directory")
     parser.add_argument("--j5-output", help="Path to MapReduce J5 output directory (with session_partial/part-r-*)")
     parser.add_argument("--j6-output", help="Path to MapReduce J6 output directory (with funnel_daily/part-r-*)")
+    parser.add_argument("--reports-dir", help="Path to exported reports directory to verify 8 CSV reports and metadata")
     args = parser.parse_args()
 
     # Determine input CSV
@@ -1244,6 +1427,12 @@ def main():
             if not verify_against_mr_j6(j6_df, args.j6_output):
                 print("\nFAIL: J6 verification checks failed.", file=sys.stderr)
                 sys.exit(1)
+
+    # Reports Verification (M8)
+    if args.job in ["reports", "all"] and args.reports_dir:
+        if not verify_exported_reports(args.reports_dir, csv_path, topn=args.topn):
+            print("\nFAIL: Exported reports verification checks failed.", file=sys.stderr)
+            sys.exit(1)
 
     print("\nALL CHECKS PASSED (Baselines verified against SRS rules and invariants)")
     sys.exit(0)

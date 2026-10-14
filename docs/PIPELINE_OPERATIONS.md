@@ -183,9 +183,61 @@ To execute nightly batch runs automatically every night at 02:00 UTC:
 
 | Verification Scope | Status | Notes |
 |---|:---:|---|
-| **JUnit 5 Test Suite** | **PASS** | 192 tests passing across all packages; 0 failures. |
-| **JaCoCo Line Coverage** | **PASS** | **84.41%** overall line coverage (1,516/1,796 lines), above the ≥ 80% SRS threshold. Root package `edu.bigdata.clickstream` achieves **87.82%**. |
+| **JUnit 5 Test Suite** | **PASS** | 201 tests passing across all packages; 0 failures. |
+| **JaCoCo Line Coverage** | **PASS** | **83.32%** overall line coverage (1,659/1,991 lines), above the ≥ 80% SRS threshold. Root package `edu.bigdata.clickstream` achieves **87.82%**. |
 | **Pandas Golden Baseline** | **PASS** | `verify_with_pandas.py --job all` passes all baseline invariants. |
 | **Python Ingestion Suite** | **PASS** | `test_data_ingestion.py` passes 7/7 tests. |
-| **Shell Test Suite** | **PASS** | `test_nightly_batch.sh` passes 5/5 tests (including lock collision exit code 75). |
+| **Shell Test Suite** | **PASS** | `test_nightly_batch.sh` passes 8/8 tests (including lock collision exit code 75). |
+| **Python Exporter Suite** | **PASS** | `test_export_reports.py` passes 10/10 tests. |
 | **Docker Daemon / Cluster** | **PENDING** | Docker daemon remains inactive in the host environment; full distributed cluster execution remains pending cluster startup. |
+
+---
+
+## 7. Report Export & Golden Verification (`scripts/export_reports.py`)
+
+### 7.1 Overview
+`scripts/export_reports.py` is the authoritative reporting bridge that streams processed MapReduce job outputs (J1–J6) into standardized, deterministic CSV reports and metadata in `reports/<run_id>/`.
+
+### 7.2 CLI Usage
+```bash
+python scripts/export_reports.py \
+  --run-id <run_id> \
+  [--work-dir <work_dir>] \
+  [--reports-dir <reports_dir>] \
+  [--force] [--overwrite]
+```
+
+### 7.3 Eight Standardized Reports
+| Report Name | Source MR Job | Exact Schema Columns | Sort Order |
+|---|---|---|---|
+| `traffic_hourly.csv` | J1 `traffic/part-*` | `date,hour,total,views,carts,removes,purchases,malformed,malformed_rate_pct` | `date` asc, `hour` asc |
+| `peak_hour_daily.csv` | J2 `peak/peakday-*` | `date,peak_hour,peak_total,day_total,peak_share_pct` | `date` asc |
+| `hour_of_day_profile.csv` | J2 `peak/hourofday-*` | `hour,total_events,days_observed,avg_events_per_day` | `hour` asc |
+| `top_products.csv` | J4 `top_products/part-*` & J3 views | `rank,product_id,category_code,brand,views,share_of_all_views_pct` | `rank` asc |
+| `top_categories.csv` | J4 `top_categories/part-*` & J3 views | `rank,category_code,views,share_of_categorised_views_pct` | `rank` asc |
+| `quality_daily.csv` | J1 `traffic/part-*` | `date,total_records,valid,malformed,malformed_rate_pct` | `date` asc |
+| `quality_reasons.csv` | J1/RunMeta counters | `reason,count,share_of_malformed_pct` | Fixed SRS order (8 reasons) |
+| `funnel_daily.csv` | J6 `funnel_daily/part-*` & J1 carts | `date,sessions,cart_sessions,purchase_sessions,abandoned_sessions,remove_events,cart_events,cart_abandonment_rate_pct,conversion_rate_pct,remove_rate_pct` | `date` asc |
+
+### 7.4 Metadata Contract (`report_meta.json`)
+The exporter publishes `report_meta.json` containing:
+- `schema_version`: `"1.0"`
+- `run_id`: Run identifier string matching the pipeline run
+- `status`: `"SUCCESS"`
+- `generated_at`: ISO 8601 UTC timestamp
+- `source_work_dir`: Path to source pipeline work directory
+- `run_meta_file`: `"run_meta.json"` (copied into reports directory)
+- `reports`: Map of report filename to record count
+- `column_definitions`: Dictionary mapping each report column to its mathematical definition
+
+### 7.5 Publishing Lifecycle & Determinism
+1. **Validation**: Reads and validates `run_meta.json` in source work directory; rejects runs with `status != "SUCCESS"` or `invariant_ok == false`.
+2. **Safe Staging**: Writes all CSVs to temporary staging directory `<reports_dir>.tmp.<pid>`.
+3. **Atomic Rename**: Replaces `<reports_dir>` via atomic `os.replace` only after all 8 reports and metadata validate.
+4. **Determinism**: Stable multi-key sorting, canonical UTF-8 encoding, Unix linefeeds (`\n`), and 4-decimal rate calculations (`%.4f`) guarantee byte-for-byte reproducibility across runs.
+
+### 7.6 Independent Pandas Verification
+```bash
+python scripts/verify_with_pandas.py --reports-dir reports/<run_id> --csv <source.csv>
+```
+Validates all 8 CSVs against independently calculated baselines without reusing exporter code, emitting `ALL CHECKS PASSED` upon success.

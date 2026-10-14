@@ -414,12 +414,64 @@
 
 ---
 
+### Phase 4: Reporting & Golden Verification (Milestone M8) (DONE)
+
+#### Milestone M8: Standardized Report Exporter & Independent Pandas Verification
+- [x] **Report Exporter (`scripts/export_reports.py`)**:
+  - Direct consumption of actual pipeline/HDFS J1–J6 part files (ignoring `_SUCCESS`, `.crc`, hidden files).
+  - Generates exact 8 CSV reports required by PRD/SRS §3.5:
+    1. `traffic_hourly.csv`: `date, hour, total, views, carts, removes, purchases, malformed, malformed_rate_pct` (sorted by date asc, hour asc).
+    2. `peak_hour_daily.csv`: `date, peak_hour, peak_total, day_total, peak_share_pct` (sorted by date asc).
+    3. `hour_of_day_profile.csv`: `hour, total_events, days_observed, avg_events_per_day` (sorted by hour asc).
+    4. `top_products.csv`: `rank, product_id, category_code, brand, views, share_of_all_views_pct` (sorted by rank asc).
+    5. `top_categories.csv`: `rank, category_code, views, share_of_categorised_views_pct` (sorted by rank asc).
+    6. `quality_daily.csv`: `date, total_records, valid, malformed, malformed_rate_pct` (sorted by date asc).
+    7. `quality_reasons.csv`: `reason, count, share_of_malformed_pct` (8 standardized SRS quality reasons in fixed order).
+    8. `funnel_daily.csv`: `date, sessions, cart_sessions, purchase_sessions, abandoned_sessions, remove_events, cart_events, cart_abandonment_rate_pct, conversion_rate_pct, remove_rate_pct` (sorted by date asc).
+  - Derived rate calculation formatting: strictly `%.4f` (percentage points); empty string `""` on zero denominator.
+  - Safe publishing lifecycle: stages in `<reports_dir>.tmp.<pid>`, validates non-empty and well-formed schemas, then atomically publishes via `os.replace`. Clean failure semantics ensure no partial outputs remain.
+  - Overwrite protection: aborts if destination exists unless `--overwrite` or `--force` is supplied.
+  - Run metadata contract: validates `run_meta.json` in source work directory; refuses export if status is not `SUCCESS` or if reconciliation invariant failed.
+  - Generates `report_meta.json` with schema version `1.0`, run identifier, generation timestamp (ISO 8601 UTC), report files, row counts, and column definitions.
+  - Copies validated `run_meta.json` into report directory.
+  - Determinism: byte-for-byte identical output verified across multiple independent runs on same input.
+
+- [x] **Independent Golden Verifier (`scripts/verify_with_pandas.py`)**:
+  - Extended with `--reports-dir` flag and `verify_exported_reports()` function.
+  - Independently calculates all expected metrics from raw `mini_clickstream.csv` without reusing exporter code.
+  - Rigorously validates all 8 CSV schemas, record counts, tie-breaking order, rates, and JSON metadata.
+  - Prints `ALL CHECKS PASSED` only when every single check succeeds.
+
+- [x] **Automated Test Suite (`tests/test_export_reports.py`)**:
+  - 10 test cases covering:
+    1. `test_export_reports_valid_fixture`: All 8 CSVs and 2 JSONs generated correctly.
+    2. `test_export_deterministic_byte_identical`: Repeated exports produce 100% byte-for-byte identical files.
+    3. `test_refuse_failed_run_meta`: Aborts with code 1 when `run_meta.json` status is `FAILED`.
+    4. `test_refuse_invariant_failed_run_meta`: Aborts with code 1 when invariant check is false.
+    5. `test_missing_required_input_fails_cleanly`: Clean error and temporary directory cleanup on missing inputs.
+    6. `test_multiple_part_files_handled_correctly`: Correctly reads and aggregates multi-part Hadoop outputs.
+    7. `test_overwrite_protection_without_force`: Refuses to overwrite existing report directory without `--overwrite`.
+    8. `test_paths_with_spaces`: Fully supports directories containing spaces.
+    9. `test_report_meta_schema_and_counts`: Verifies exact schema and record counts in `report_meta.json`.
+    10. `test_pandas_independent_verification_integration`: End-to-end integration test with `verify_with_pandas.py`.
+  - All 10 tests passing (100%).
+
+- [x] **Regression & Verification Suite**:
+  - Python Exporter Tests: **10/10 PASS**.
+  - Ingestion Tests: **7/7 PASS** (`tests/test_data_ingestion.py`).
+  - Independent Pandas Baseline Verification: **ALL CHECKS PASSED** (`scripts/verify_with_pandas.py --job all`).
+  - Java Regression Suite: **201/201 PASS** (100% passing across 40 classes).
+  - Shell Automation Suite: **8/8 PASS** (`tests/test_nightly_batch.sh`).
+
+---
+
 ## Upcoming Milestones
 
 | Milestone | Target | Requirements |
 |---|---|---|
-| **M8** | Exporter & Streamlit Dashboard | `export_reports.py` (8 CSVs), `verify_with_pandas.py`, 5-view Streamlit UI. |
-| **M9** | Benchmarks & Final Deliverables | `benchmarks.md`, `final-report.md`, `demo-script.md`. |
+| **M9** | Streamlit Dashboard & Delivery | Streamlit 5-view analytics dashboard (`dashboard/app.py`), benchmarks, demo script. |
+| **M10** | Final Documentation & Wrap-up | `docs/benchmarks.md`, `docs/final-report.md`, `docs/demo-script.md`. |
+
 
 
 

@@ -151,3 +151,23 @@ bash scripts/nightly_batch.sh --backfill --from 2019-11-01 --to 2019-11-07
 # Display or install the production 02:00 UTC crontab entry (FR-SCH-01)
 bash scripts/nightly_batch.sh --install-cron
 ```
+
+### Step 8: Export Standardized CSV Reports (Milestone M8)
+```bash
+# Export 8 standardized CSV reports and metadata to reports/<run_id>/
+python scripts/export_reports.py \
+  --run-id daily-2019-11-01 \
+  --work-dir /clickstream/work/daily-2019-11-01 \
+  --reports-dir reports/daily-2019-11-01
+```
+
+### Step 9: Independent Pandas Golden Verification
+```bash
+# Verify all MapReduce baselines (J1-J6) independently against SRS rules:
+python scripts/verify_with_pandas.py --job all
+
+# Verify exported reports directory against independent golden calculation:
+python scripts/verify_with_pandas.py \
+  --reports-dir reports/daily-2019-11-01 \
+  --csv src/test/resources/fixtures/mini_clickstream.csv
+```
