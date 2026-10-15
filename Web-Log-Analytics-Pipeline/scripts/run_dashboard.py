@@ -19,26 +19,18 @@ if sys.platform.startswith("win"):
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# Backward compatibility shim for starlette >= 0.38 with streamlit <= 1.61
-try:
-    import starlette.middleware.gzip as _sm_gzip
-    if not hasattr(_sm_gzip, "DEFAULT_EXCLUDED_CONTENT_TYPES"):
-        _sm_gzip.DEFAULT_EXCLUDED_CONTENT_TYPES = frozenset()
-    if not hasattr(_sm_gzip, "IdentityResponder"):
-        class _IdentityResponder:
-            def __init__(self, app):
-                self.app = app
-            async def __call__(self, scope, receive, send):
-                await self.app(scope, receive, send)
-        _sm_gzip.IdentityResponder = _IdentityResponder
-except ImportError:
-    pass
+# Add project root to sys.path so dashboard package is importable
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+# Apply centralized shims and download filename patches
+from dashboard import streamlit_patch
+streamlit_patch.patch_all()
 
 from streamlit.web import cli as stcli
 
 if __name__ == "__main__":
-    app_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard", "app.py"
-    )
+    app_path = os.path.join(repo_root, "dashboard", "app.py")
     sys.argv = ["streamlit", "run", app_path] + sys.argv[1:]
     sys.exit(stcli.main())

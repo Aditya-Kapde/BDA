@@ -24,20 +24,14 @@ if sys.platform.startswith("win"):
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# 1. Compatibility shim for Starlette >= 0.38 with Streamlit <= 1.61
-try:
-    import starlette.middleware.gzip as _sm_gzip
-    if not hasattr(_sm_gzip, "DEFAULT_EXCLUDED_CONTENT_TYPES"):
-        _sm_gzip.DEFAULT_EXCLUDED_CONTENT_TYPES = frozenset()
-    if not hasattr(_sm_gzip, "IdentityResponder"):
-        class _IdentityResponder:
-            def __init__(self, app):
-                self.app = app
-            async def __call__(self, scope, receive, send):
-                await self.app(scope, receive, send)
-        _sm_gzip.IdentityResponder = _IdentityResponder
-except ImportError:
-    pass
+# Add project root to sys.path so dashboard package is importable
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+# Apply centralized shims and download filename patches
+from dashboard import streamlit_patch
+streamlit_patch.patch_all()
 
 import altair as alt
 import pandas as pd
@@ -45,7 +39,9 @@ import streamlit as st
 
 # Add project root and dashboard to path for data_loader
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import importlib
 from dashboard import data_loader
+importlib.reload(data_loader)
 
 # Configure page layout
 st.set_page_config(
@@ -395,10 +391,22 @@ def render_top_header(data: Dict[str, Any], selected_run: str):
         f"{run_meta.get('duration_sec', 0)}s" if run_meta.get("duration_sec") else "N/A"
     )
     gen_time = rep_meta.get("generated_at", run_meta.get("end_time", run_meta.get("end", "N/A")))
-    if gen_time and "T" in gen_time:
-        gen_time_clean = gen_time.replace("Z", " UTC").replace("T", " ")
+    if gen_time and gen_time != "N/A":
+        parts = str(gen_time).split("T")
+        if len(parts) == 2:
+            date_part = parts[0]
+            time_part = parts[1].rstrip("Z")
+            if "." in time_part:
+                time_part = time_part.split(".")[0]
+            gen_time_clean = f"{date_part} {time_part} UTC"
+        else:
+            cleaned = str(gen_time).rstrip("Z")
+            if not cleaned.endswith("UTC"):
+                gen_time_clean = f"{cleaned} UTC"
+            else:
+                gen_time_clean = cleaned
     else:
-        gen_time_clean = gen_time
+        gen_time_clean = "N/A"
 
     st.markdown(
         f"""
@@ -488,9 +496,10 @@ def render_overview(data: Dict[str, Any]):
     # 2. Hourly Traffic Trend Chart
     st.markdown(
         """
-        <div class="section-card">
+        <div style="margin-top: 18px; margin-bottom: 8px;">
             <div class="section-title">Hourly Traffic Trends</div>
             <div class="section-subtitle">Aggregated clickstream volume across observed UTC hours (Job J1: HourlyTraffic)</div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -540,12 +549,17 @@ def render_overview(data: Dict[str, Any]):
                 .properties(height=300)
             )
             st.altair_chart(apply_dark_theme(trend_chart), use_container_width=True)
+            st.download_button(
+                label="Download traffic_hourly.csv",
+                data=data_loader.get_report_raw_csv(data, "traffic_hourly.csv"),
+                file_name="traffic_hourly.csv",
+                mime="text/csv",
+                key="dl_traffic_hourly",
+            )
         else:
             st.info("No valid hourly traffic trend records available.")
     else:
         st.info("No hourly traffic records available for this run.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
     # 3. Two-Column Breakdown: Event Composition & Behavioral Funnel Snapshot
     col_left, col_right = st.columns(2)
@@ -553,9 +567,10 @@ def render_overview(data: Dict[str, Any]):
     with col_left:
         st.markdown(
             """
-            <div class="section-card">
+            <div style="margin-top: 18px; margin-bottom: 8px;">
                 <div class="section-title">Event Type Distribution</div>
                 <div class="section-subtitle">Breakdown of valid clickstream events by user action</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -590,14 +605,14 @@ def render_overview(data: Dict[str, Any]):
             st.altair_chart(apply_dark_theme(bar_chart), use_container_width=True)
         else:
             st.info("Zero event volume recorded.")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     with col_right:
         st.markdown(
             """
-            <div class="section-card">
+            <div style="margin-top: 18px; margin-bottom: 8px;">
                 <div class="section-title">Session Conversion Funnel</div>
                 <div class="section-subtitle">Aggregated user progression from visit to purchase</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -629,14 +644,14 @@ def render_overview(data: Dict[str, Any]):
             """,
             unsafe_allow_html=True,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
 
     # 4. Data Quality Daily Table Snapshot
     st.markdown(
         """
-        <div class="section-card">
+        <div style="margin-top: 20px; margin-bottom: 8px;">
             <div class="section-title">Daily Data Quality Breakdown</div>
             <div class="section-subtitle">Standardized quality accounting by UTC date partition (quality_daily.csv)</div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -645,13 +660,13 @@ def render_overview(data: Dict[str, Any]):
         st.dataframe(qd, use_container_width=True)
         st.download_button(
             label="Download quality_daily.csv",
-            data=qd.to_csv(index=False),
+            data=data_loader.get_report_raw_csv(data, "quality_daily.csv"),
             file_name="quality_daily.csv",
             mime="text/csv",
+            key="dl_quality_daily_overview",
         )
     else:
         st.info("No daily quality breakdown records available.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -692,9 +707,10 @@ def render_peak_traffic(data: Dict[str, Any]):
     # Hour of Day Profile Chart (Reference Image 2)
     st.markdown(
         """
-        <div class="section-card">
+        <div style="margin-top: 18px; margin-bottom: 8px;">
             <div class="section-title">Average Traffic by Hour of Day (UTC)</div>
             <div class="section-subtitle">Normalized distribution across 24 UTC hours (Job J2: PeakHour Profile)</div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -733,16 +749,16 @@ def render_peak_traffic(data: Dict[str, Any]):
         st.altair_chart(apply_dark_theme(bar_chart), use_container_width=True)
     else:
         st.info("No hour-of-day profile records available.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
     # Tables in two columns
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(
             """
-            <div class="section-card">
+            <div style="margin-top: 18px; margin-bottom: 8px;">
                 <div class="section-title">Daily Peak Hour Summary</div>
                 <div class="section-subtitle">Peak hour identified per calendar day (peak_hour_daily.csv)</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -751,20 +767,21 @@ def render_peak_traffic(data: Dict[str, Any]):
             st.dataframe(pd_df, use_container_width=True)
             st.download_button(
                 label="Download peak_hour_daily.csv",
-                data=pd_df.to_csv(index=False),
+                data=data_loader.get_report_raw_csv(data, "peak_hour_daily.csv"),
                 file_name="peak_hour_daily.csv",
                 mime="text/csv",
+                key="dl_peak_hour_daily",
             )
         else:
             st.info("No peak hour daily data.")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     with col2:
         st.markdown(
             """
-            <div class="section-card">
+            <div style="margin-top: 18px; margin-bottom: 8px;">
                 <div class="section-title">Hourly Traffic Profile Data</div>
                 <div class="section-subtitle">Aggregated totals and daily averages (hour_of_day_profile.csv)</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -775,13 +792,13 @@ def render_peak_traffic(data: Dict[str, Any]):
             )
             st.download_button(
                 label="Download hour_of_day_profile.csv",
-                data=hod.to_csv(index=False),
+                data=data_loader.get_report_raw_csv(data, "hour_of_day_profile.csv"),
                 file_name="hour_of_day_profile.csv",
                 mime="text/csv",
+                key="dl_hour_of_day_profile",
             )
         else:
             st.info("No profile data.")
-        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -828,9 +845,10 @@ def render_top_pages(data: Dict[str, Any]):
     with tab_prod:
         st.markdown(
             """
-            <div class="section-card">
+            <div style="margin-top: 14px; margin-bottom: 8px;">
                 <div class="section-title">Top Products Leaderboard</div>
                 <div class="section-subtitle">Ranked by total page view volume (Job J4: TopN Products)</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -875,20 +893,21 @@ def render_top_pages(data: Dict[str, Any]):
 
             st.download_button(
                 label="Download top_products.csv",
-                data=tp.to_csv(index=False),
+                data=data_loader.get_report_raw_csv(data, "top_products.csv"),
                 file_name="top_products.csv",
                 mime="text/csv",
+                key="dl_top_products",
             )
         else:
             st.info("No top products records available.")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     with tab_cat:
         st.markdown(
             """
-            <div class="section-card">
+            <div style="margin-top: 14px; margin-bottom: 8px;">
                 <div class="section-title">Top Categories Leaderboard</div>
                 <div class="section-subtitle">Ranked by aggregated view volume (Job J4: TopN Categories)</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -914,13 +933,13 @@ def render_top_pages(data: Dict[str, Any]):
             )
             st.download_button(
                 label="Download top_categories.csv",
-                data=tc.to_csv(index=False),
+                data=data_loader.get_report_raw_csv(data, "top_categories.csv"),
                 file_name="top_categories.csv",
                 mime="text/csv",
+                key="dl_top_categories",
             )
         else:
             st.info("No top categories records available.")
-        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -963,9 +982,10 @@ def render_errors_and_funnel(data: Dict[str, Any]):
 
         st.markdown(
             """
-            <div class="section-card">
+            <div style="margin-top: 14px; margin-bottom: 8px;">
                 <div class="section-title">Malformed Record Reasons Breakdown</div>
                 <div class="section-subtitle">Distribution of parser failure categories (quality_reasons.csv)</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -990,13 +1010,35 @@ def render_errors_and_funnel(data: Dict[str, Any]):
             st.dataframe(qr, use_container_width=True)
             st.download_button(
                 label="Download quality_reasons.csv",
-                data=qr.to_csv(index=False),
+                data=data_loader.get_report_raw_csv(data, "quality_reasons.csv"),
                 file_name="quality_reasons.csv",
                 mime="text/csv",
+                key="dl_quality_reasons",
             )
         else:
             st.info("No error reasons recorded.")
-        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown(
+            """
+            <div style="margin-top: 20px; margin-bottom: 8px;">
+                <div class="section-title">Daily Data Quality Breakdown</div>
+                <div class="section-subtitle">Standardized quality accounting by UTC date partition (quality_daily.csv)</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        qd = data["quality_daily"].copy()
+        if not qd.empty:
+            st.dataframe(qd, use_container_width=True)
+            st.download_button(
+                label="Download quality_daily.csv",
+                data=data_loader.get_report_raw_csv(data, "quality_daily.csv"),
+                file_name="quality_daily.csv",
+                mime="text/csv",
+                key="dl_quality_daily_errors",
+            )
+        else:
+            st.info("No daily quality breakdown records available.")
 
     with tab_funnel:
         fd = data["funnel_daily"].copy()
@@ -1067,20 +1109,21 @@ def render_errors_and_funnel(data: Dict[str, Any]):
 
             st.markdown(
                 """
-                <div class="section-card">
+                <div style="margin-top: 20px; margin-bottom: 8px;">
                     <div class="section-title">Consolidated Daily Funnel Table</div>
                     <div class="section-subtitle">Daily session funnel metrics and rates (funnel_daily.csv)</div>
+                </div>
                 """,
                 unsafe_allow_html=True,
             )
             st.dataframe(fd, use_container_width=True)
             st.download_button(
                 label="Download funnel_daily.csv",
-                data=fd.to_csv(index=False),
+                data=data_loader.get_report_raw_csv(data, "funnel_daily.csv"),
                 file_name="funnel_daily.csv",
                 mime="text/csv",
+                key="dl_funnel_daily",
             )
-            st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.info("No funnel data available for this run.")
 

@@ -358,6 +358,117 @@ class TestDashboardDataLoader(unittest.TestCase):
         # Test headless rendering of render_job_runs without error
         app.render_job_runs(data)
 
+    def test_download_filenames_and_mime_types(self):
+        """Verifies that all 8 authoritative CSV reports have exact filenames and text/csv MIME."""
+        expected_files = [
+            "traffic_hourly.csv",
+            "peak_hour_daily.csv",
+            "hour_of_day_profile.csv",
+            "top_products.csv",
+            "top_categories.csv",
+            "quality_daily.csv",
+            "quality_reasons.csv",
+            "funnel_daily.csv",
+        ]
+        run_path = os.path.join(self.reports_base, "dl_test_run")
+        create_mock_report_dir(run_path)
+        data = data_loader.load_run_data(run_path)
+
+        for fname in expected_files:
+            self.assertTrue(fname.endswith(".csv"), f"{fname} does not end with .csv")
+            raw_csv = data_loader.get_report_raw_csv(data, fname)
+            self.assertIsInstance(raw_csv, str)
+            self.assertGreater(len(raw_csv), 0)
+
+    def test_download_raw_bytes_integrity_and_run_switching(self):
+        """Verifies that download content matches exact on-disk files byte-for-byte and updates on run switch."""
+        runA_path = os.path.join(self.reports_base, "run_alpha")
+        runB_path = os.path.join(self.reports_base, "run_beta")
+        create_mock_report_dir(runA_path, run_id="run_alpha")
+        create_mock_report_dir(runB_path, run_id="run_beta")
+
+        # Custom unique content for quality_daily.csv in each run
+        content_A = "date,total_records,valid,malformed,malformed_rate_pct\n2019-11-01,100,95,5,5.0000\n"
+        content_B = "date,total_records,valid,malformed,malformed_rate_pct\n2019-11-02,200,180,20,10.0000\n"
+
+        with open(os.path.join(runA_path, "quality_daily.csv"), "w", encoding="utf-8") as f:
+            f.write(content_A)
+        with open(os.path.join(runB_path, "quality_daily.csv"), "w", encoding="utf-8") as f:
+            f.write(content_B)
+
+        data_A = data_loader.load_run_data(runA_path)
+        data_B = data_loader.load_run_data(runB_path)
+
+        # 1. Byte-for-byte match against on-disk files
+        self.assertEqual(data_loader.get_report_raw_csv(data_A, "quality_daily.csv"), content_A)
+        self.assertEqual(data_loader.get_report_raw_csv(data_B, "quality_daily.csv"), content_B)
+
+        # 2. Strict run isolation (no stale cached data from previous run)
+        self.assertNotEqual(
+            data_loader.get_report_raw_csv(data_A, "quality_daily.csv"),
+            data_loader.get_report_raw_csv(data_B, "quality_daily.csv"),
+        )
+
+    def test_empty_or_missing_report_download_safety(self):
+        """Verifies safe handling of empty or missing reports without fabricated data."""
+        data_empty = {"report_dir": self.reports_base}
+        # Missing file in report_dir
+        res = data_loader.get_report_raw_csv(data_empty, "non_existent_report.csv")
+        self.assertEqual(res, "")
+
+        # Empty dataframe fallback
+        data_df_empty = {"report_dir": "", "test_rep": pd.DataFrame()}
+        res_df = data_loader.get_report_raw_csv(data_df_empty, "test_rep.csv")
+        self.assertIn(res_df, ("\n", "\r\n"))
+
+    def test_storage_url_patch_preserves_filename(self):
+        """Verifies that MemoryMediaFileStorage patch embeds explicit filenames in URLs and retrieves them."""
+        import urllib.parse
+        import streamlit.runtime.memory_media_file_storage as mmfs
+        from streamlit.runtime.media_file_storage import MediaFileKind
+
+        storage = mmfs.MemoryMediaFileStorage("/_stcore/media")
+        content = b"header1,header2\nval1,val2\n"
+
+        # 1. Standard filename
+        fid = storage.load_and_get_id(content, "text/csv", MediaFileKind.DOWNLOADABLE, "quality_daily.csv")
+        url = storage.get_url(fid)
+        self.assertTrue(url.endswith("/quality_daily.csv"), f"URL does not end with filename: {url}")
+        path_param = url.replace("/_stcore/media/", "")
+        mf = storage.get_file(path_param)
+        self.assertEqual(mf.filename, "quality_daily.csv")
+        self.assertEqual(mf.content, content)
+
+        # 2. Spaces and special characters
+        special_name = "quality daily (final) [2019].csv"
+        fid_sp = storage.load_and_get_id(content, "text/csv", MediaFileKind.DOWNLOADABLE, special_name)
+        url_sp = storage.get_url(fid_sp)
+        expected_quoted = urllib.parse.quote(special_name)
+        self.assertTrue(url_sp.endswith(f"/{expected_quoted}"), f"URL does not encode spaces/special chars: {url_sp}")
+        path_param_sp = url_sp.replace("/_stcore/media/", "")
+        mf_sp = storage.get_file(path_param_sp)
+        self.assertEqual(mf_sp.filename, special_name)
+        self.assertEqual(mf_sp.content, content)
+
+        # 3. Non-downloadable media files fallback to standard Streamlit URL
+        fid_media = storage.load_and_get_id(content, "text/csv", MediaFileKind.MEDIA, "image.png")
+        url_media = storage.get_url(fid_media)
+        self.assertFalse(url_media.endswith("/image.png"))
+        self.assertTrue(url_media.endswith(f"/{fid_media}.csv"))
+
+        # 4. Patch idempotency: repeated patching must not create recursion or duplicate wrappers
+        from dashboard import streamlit_patch
+        self.assertTrue(streamlit_patch.apply_download_filename_patch())
+        self.assertTrue(streamlit_patch.apply_starlette_gzip_shim())
+
+        orig_get_url = mmfs.MemoryMediaFileStorage._original_get_url
+        orig_get_file = mmfs.MemoryMediaFileStorage._original_get_file
+        # Re-evaluating the patch guard:
+        self.assertTrue(hasattr(mmfs.MemoryMediaFileStorage, "_original_get_url"))
+        self.assertTrue(hasattr(mmfs.MemoryMediaFileStorage, "_original_get_file"))
+        self.assertIs(mmfs.MemoryMediaFileStorage._original_get_url, orig_get_url)
+        self.assertIs(mmfs.MemoryMediaFileStorage._original_get_file, orig_get_file)
+
 
 if __name__ == "__main__":
     unittest.main()

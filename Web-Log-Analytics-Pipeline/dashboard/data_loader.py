@@ -176,6 +176,28 @@ def load_run_data(report_dir: str) -> Dict[str, Any]:
     }
 
 
+def get_report_raw_csv(data: Dict[str, Any], filename: str) -> str:
+    """
+    Returns the exact raw CSV string from the selected run's report directory
+    to preserve column ordering, row values, precision, and encoding byte-for-byte.
+    Falls back to dataframe to_csv() only if the file cannot be read from disk.
+    """
+    report_dir = data.get("report_dir")
+    if report_dir:
+        filepath = os.path.join(report_dir, filename)
+        if os.path.isfile(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                pass
+    key = filename.replace(".csv", "")
+    df = data.get(key)
+    if df is not None and isinstance(df, pd.DataFrame):
+        return df.to_csv(index=False)
+    return ""
+
+
 def format_duration_ms(ms: Optional[int]) -> str:
     """Formats milliseconds into a readable mm:ss string or seconds."""
     if ms is None or ms < 0:
