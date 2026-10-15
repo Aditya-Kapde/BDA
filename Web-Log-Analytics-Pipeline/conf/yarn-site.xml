@@ -48,4 +48,8 @@
         <name>yarn.log-aggregation-enabled</name>
         <value>true</value>
     </property>
+    <property>
+        <name>yarn.application.classpath</name>
+        <value>/etc/hadoop,/opt/hadoop/share/hadoop/common/*,/opt/hadoop/share/hadoop/common/lib/*,/opt/hadoop/share/hadoop/hdfs/*,/opt/hadoop/share/hadoop/hdfs/lib/*,/opt/hadoop/share/hadoop/mapreduce/*,/opt/hadoop/share/hadoop/mapreduce/lib/*,/opt/hadoop/share/hadoop/yarn/*,/opt/hadoop/share/hadoop/yarn/lib/*</value>
+    </property>
 </configuration>

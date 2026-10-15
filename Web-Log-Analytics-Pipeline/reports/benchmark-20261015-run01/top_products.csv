@@ -1,0 +1,5 @@
+rank,product_id,category_code,brand,views,share_of_all_views_pct
+1,1001,electronics.smartphone,acme,3,50.0000
+2,1002,,,1,16.6667
+3,1004,electronics.smartphone,acme,1,16.6667
+4,1005,electronics.smartphone,acme,1,16.6667

@@ -23,6 +23,9 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Large raw dataset files
+# Large raw dataset files & runtime staging
 data/raw/
+**/data/smoke_staging_partitions/
+work/
+**/work/
 *.parquet

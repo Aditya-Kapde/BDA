@@ -45,11 +45,11 @@ EXPECTED_SCHEMAS = {
         "date", "total_records", "valid", "malformed", "malformed_rate_pct"
     ],
     "quality_reasons.csv": [
-        "reason", "count", "share_of_malformed_pct"
+        "reason", "count"
     ],
     "funnel_daily.csv": [
         "date", "sessions", "cart_sessions", "purchase_sessions", "abandoned_sessions",
-        "remove_events", "cart_events", "cart_abandonment_rate_pct", "conversion_rate_pct", "remove_rate_pct"
+        "cart_abandonment_rate_pct", "conversion_rate_pct", "cart_events", "remove_events", "remove_rate_pct"
     ],
 }
 
@@ -144,11 +144,15 @@ def load_run_data(report_dir: str) -> Dict[str, Any]:
         fpath = os.path.join(report_dir, fname)
         exp_cols = EXPECTED_SCHEMAS[fname]
 
-        # Use string dtype by default to safely handle empty cells without coercion surprises
-        df = pd.read_csv(fpath, dtype=str)
+        # Use string dtype and preserve literal 'NA' strings without float coercion
+        df = pd.read_csv(fpath, dtype=str, keep_default_na=False)
 
         actual_cols = list(df.columns)
-        if actual_cols != exp_cols:
+        if fname == "quality_reasons.csv" and actual_cols in [["reason", "count"], ["reason", "count", "share_of_malformed_pct"]]:
+            pass
+        elif fname == "funnel_daily.csv" and set(actual_cols) == set(exp_cols):
+            pass
+        elif actual_cols != exp_cols:
             raise ValueError(
                 f"Schema mismatch in {fname}: expected columns {exp_cols}, but found {actual_cols}"
             )
@@ -195,14 +199,15 @@ def calculate_overview_kpis(data: Dict[str, Any]) -> Dict[str, Any]:
     run_meta = data["run_meta"]
 
     # 1. Total events and breakdown
-    if not qd.empty:
-        valid_records = qd["valid"].astype(int).sum()
-        malformed_records = qd["malformed"].astype(int).sum()
-        total_records = qd["total_records"].astype(int).sum()
-    elif not th.empty:
+    # Primary authoritative source is traffic_hourly, which reconciles all processed records (including unattributable NA date records)
+    if not th.empty:
         valid_records = th["total"].astype(int).sum()
         malformed_records = th["malformed"].astype(int).sum()
         total_records = valid_records + malformed_records
+    elif not qd.empty:
+        valid_records = qd["valid"].astype(int).sum()
+        malformed_records = qd["malformed"].astype(int).sum()
+        total_records = qd["total_records"].astype(int).sum()
     else:
         valid_records = 0
         malformed_records = 0
@@ -212,13 +217,16 @@ def calculate_overview_kpis(data: Dict[str, Any]) -> Dict[str, Any]:
         (malformed_records / total_records * 100.0) if total_records > 0 else 0.0
     )
 
+    attributable_malformed = qd["malformed"].astype(int).sum() if not qd.empty else malformed_records
+    unattributable_malformed = max(0, malformed_records - attributable_malformed)
+
     # 2. Event type totals from traffic_hourly
     if not th.empty:
         total_views = th["views"].astype(int).sum()
         total_carts = th["carts"].astype(int).sum()
         total_removes = th["removes"].astype(int).sum()
         total_purchases = th["purchases"].astype(int).sum()
-        unique_dates = sorted([d for d in th["date"].unique() if d != "NA"])
+        unique_dates = sorted([str(d) for d in th["date"].unique() if str(d) not in ("NA", "nan", "")])
         days_covered = len(unique_dates)
     else:
         total_views = 0
@@ -262,13 +270,19 @@ def calculate_overview_kpis(data: Dict[str, Any]) -> Dict[str, Any]:
 
     # 5. Run status & duration
     run_status = run_meta.get("status", "SUCCESS")
+    duration_sec = run_meta.get("duration_sec")
     duration_ms = run_meta.get("duration_ms")
-    duration_str = format_duration_ms(duration_ms)
+    if duration_sec is not None:
+        duration_str = f"{duration_sec // 60:02d}m {duration_sec % 60:02d}s" if duration_sec >= 60 else f"{duration_sec}s"
+    else:
+        duration_str = format_duration_ms(duration_ms)
 
     return {
         "total_records": total_records,
         "valid_records": valid_records,
         "malformed_records": malformed_records,
+        "attributable_malformed": attributable_malformed,
+        "unattributable_malformed": unattributable_malformed,
         "malformed_rate_pct": malformed_rate_pct,
         "total_views": total_views,
         "total_carts": total_carts,
@@ -355,13 +369,17 @@ def calculate_funnel_summary(data: Dict[str, Any]) -> Dict[str, Any]:
     # Reasons list
     reasons_list = []
     if not qr.empty:
+        total_malformed = sum(int(row["count"]) for _, row in qr.iterrows())
         for _, row in qr.iterrows():
             cnt = int(row["count"])
-            pct_str = row["share_of_malformed_pct"]
+            if "share_of_malformed_pct" in row and row["share_of_malformed_pct"]:
+                share_pct = float(row["share_of_malformed_pct"])
+            else:
+                share_pct = (cnt / total_malformed * 100.0) if total_malformed > 0 else 0.0
             reasons_list.append({
                 "reason": row["reason"],
                 "count": cnt,
-                "share_pct": float(pct_str) if pct_str else 0.0,
+                "share_pct": share_pct,
             })
 
     return {

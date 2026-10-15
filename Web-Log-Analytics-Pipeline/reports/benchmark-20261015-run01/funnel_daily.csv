@@ -1,0 +1,2 @@
+date,sessions,cart_sessions,purchase_sessions,abandoned_sessions,cart_abandonment_rate_pct,conversion_rate_pct,cart_events,remove_events,remove_rate_pct
+2019-11-01,6,2,1,1,50.0000,16.6667,2,1,50.0000

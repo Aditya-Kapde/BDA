@@ -892,23 +892,38 @@ def verify_against_mr_j5(expected_df: pd.DataFrame, j5_output_dir: str) -> bool:
             lines.extend(l.strip() for l in f if l.strip())
 
     mismatches = 0
-    print(f"\nVerifying J5 session funnel output ({len(lines)} actual rows vs {len(expected_df)} expected)...")
-    if len(lines) != len(expected_df):
-        print(f"FAIL: J5 row count mismatch: expected {len(expected_df)}, got {len(lines)}", file=sys.stderr)
+    # Consolidate partial outputs across reducers by date (multi-reducer contract per SRS §3.3.8 / §3.3.9)
+    actual_daily_map: Dict[str, List[int]] = {}
+    for line in lines:
+        cols = line.split("\t")
+        if len(cols) != 6:
+            print(f"FAIL: J5 line columns != 6 (got {len(cols)}): {line}", file=sys.stderr)
+            mismatches += 1
+            continue
+        d = cols[0]
+        vals = [int(cols[1]), int(cols[2]), int(cols[3]), int(cols[4]), int(cols[5])]
+        if d not in actual_daily_map:
+            actual_daily_map[d] = vals
+        else:
+            for k in range(5):
+                actual_daily_map[d][k] += vals[k]
+
+    print(f"\nVerifying J5 session funnel output ({len(actual_daily_map)} actual dates from {len(lines)} partial rows vs {len(expected_df)} expected dates)...")
+    if len(actual_daily_map) != len(expected_df):
+        print(f"FAIL: J5 date count mismatch: expected {len(expected_df)}, got {len(actual_daily_map)}", file=sys.stderr)
         mismatches += 1
     else:
-        for idx, line in enumerate(lines):
-            cols = line.split("\t")
-            if len(cols) != 6:
-                print(f"FAIL: J5 line columns != 6 (got {len(cols)}): {line}", file=sys.stderr)
+        for _, exp_row in expected_df.iterrows():
+            d = str(exp_row["date"])
+            if d not in actual_daily_map:
+                print(f"FAIL: J5 missing date: {d}", file=sys.stderr)
                 mismatches += 1
                 continue
-            exp_row = expected_df.iloc[idx]
-            act = (cols[0], int(cols[1]), int(cols[2]), int(cols[3]), int(cols[4]), int(cols[5]))
+            act = tuple([d] + actual_daily_map[d])
             exp = (str(exp_row["date"]), int(exp_row["sessions"]), int(exp_row["cart"]),
                    int(exp_row["purchase"]), int(exp_row["abandoned"]), int(exp_row["removes"]))
             if act != exp:
-                print(f"FAIL: J5 mismatch at row {idx+1}: expected {exp}, got {act}", file=sys.stderr)
+                print(f"FAIL: J5 mismatch for date {d}: expected {exp}, got {act}", file=sys.stderr)
                 mismatches += 1
 
     return mismatches == 0

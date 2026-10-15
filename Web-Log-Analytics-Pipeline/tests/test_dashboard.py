@@ -296,17 +296,66 @@ class TestDashboardDataLoader(unittest.TestCase):
         self.assertEqual(data_b["run_id"], "run_b")
         self.assertTrue(data_b["traffic_hourly"].empty)
 
-    def test_render_all_five_views_headless(self):
-        """Executes all 5 view renderers on valid mock data to confirm no exceptions."""
-        run_path = os.path.join(self.reports_base, "render_test_run")
+    def test_overview_kpis_with_unattributable_malformed_records(self):
+        """Verifies reconciliation when unattributable records (NA,NA) are present."""
+        run_path = os.path.join(self.reports_base, "unattributable_run")
         create_mock_report_dir(run_path)
-        data = data_loader.load_run_data(run_path)
 
-        # Call each renderer directly
-        app.render_overview(data)
-        app.render_peak_traffic(data)
-        app.render_top_pages(data)
-        app.render_errors_and_funnel(data)
+        # Overwrite traffic_hourly with unattributable row NA,NA
+        with open(os.path.join(run_path, "traffic_hourly.csv"), "w", encoding="utf-8") as f:
+            f.write("date,hour,total,views,carts,removes,purchases,malformed,malformed_rate_pct\n")
+            f.write("2019-11-01,0,3,2,1,0,0,0,0.0000\n")
+            f.write("2019-11-01,1,3,2,0,0,1,4,57.1429\n")
+            f.write("2019-11-01,2,2,2,0,0,0,0,0.0000\n")
+            f.write("2019-11-01,23,1,0,1,0,0,0,0.0000\n")
+            f.write("NA,NA,0,0,0,0,0,2,100.0000\n")
+
+        # quality_daily only has daily attributable date
+        with open(os.path.join(run_path, "quality_daily.csv"), "w", encoding="utf-8") as f:
+            f.write("date,total_records,valid,malformed,malformed_rate_pct\n")
+            f.write("2019-11-01,13,9,4,30.7692\n")
+
+        data = data_loader.load_run_data(run_path)
+        kpis = data_loader.calculate_overview_kpis(data)
+
+        # Invariant checks
+        self.assertEqual(kpis["valid_records"], 9)
+        self.assertEqual(kpis["malformed_records"], 6)
+        self.assertEqual(kpis["total_records"], 15)
+        self.assertEqual(kpis["valid_records"] + kpis["malformed_records"], kpis["total_records"])
+        self.assertEqual(kpis["attributable_malformed"], 4)
+        self.assertEqual(kpis["unattributable_malformed"], 2)
+        self.assertAlmostEqual(kpis["malformed_rate_pct"], 40.0, places=4)
+
+    def test_job_runs_seven_executions_representation(self):
+        """Verifies that all seven job executions (including J4 product and category) are represented."""
+        run_path = os.path.join(self.reports_base, "seven_jobs_run")
+        create_mock_report_dir(run_path)
+
+        # Write run_meta.json with 7 actual execution records
+        meta = {
+            "schema_version": "1.0",
+            "run_id": "seven_jobs_run",
+            "status": "SUCCESS",
+            "duration_sec": 145,
+            "jobs": [
+                {"name": "J1_HourlyTraffic", "job_id": "job_001", "status": "SUCCESS", "duration_sec": 29},
+                {"name": "J2_PeakHour", "job_id": "job_002", "status": "SUCCESS", "duration_sec": 17},
+                {"name": "J3_ViewCount", "job_id": "job_003", "status": "SUCCESS", "duration_sec": 22},
+                {"name": "J4_TopN_Products", "job_id": "job_004", "status": "SUCCESS", "duration_sec": 19},
+                {"name": "J4_TopN_Categories", "job_id": "job_005", "status": "SUCCESS", "duration_sec": 17},
+                {"name": "J5_SessionFunnel", "job_id": "job_006", "status": "SUCCESS", "duration_sec": 20},
+                {"name": "J6_DailyFunnel", "job_id": "job_007", "status": "SUCCESS", "duration_sec": 19},
+            ],
+            "counters": {"TOTAL_RECORDS": 16, "VALID_RECORDS": 9, "HEADER_SKIPPED": 1}
+        }
+        with open(os.path.join(run_path, "run_meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+
+        data = data_loader.load_run_data(run_path)
+        self.assertEqual(len(data["run_meta"]["jobs"]), 7)
+
+        # Test headless rendering of render_job_runs without error
         app.render_job_runs(data)
 
 

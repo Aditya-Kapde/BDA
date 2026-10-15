@@ -17,7 +17,8 @@
     </property>
     <property>
         <name>mapreduce.reduce.memory.mb</name>
-        <value>2048</value>
+        <value>1024</value>
+        <description>Aligned to 1024MB to enable 2 concurrent reducers in 3584MB batch queue (1024 AM + 2x1024 Reducers = 3072MB).</description>
     </property>
     <property>
         <name>mapreduce.map.java.opts</name>
@@ -25,7 +26,8 @@
     </property>
     <property>
         <name>mapreduce.reduce.java.opts</name>
-        <value>-Xmx1638m</value>
+        <value>-Xmx819m</value>
+        <description>80% of 1024MB container memory, matching map container heap.</description>
     </property>
     <property>
         <name>yarn.app.mapreduce.am.resource.mb</name>
@@ -42,5 +44,21 @@
     <property>
         <name>mapreduce.jobhistory.webapp.address</name>
         <value>historyserver:19888</value>
+    </property>
+    <property>
+        <name>yarn.app.mapreduce.am.env</name>
+        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+    </property>
+    <property>
+        <name>mapreduce.map.env</name>
+        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+    </property>
+    <property>
+        <name>mapreduce.reduce.env</name>
+        <value>HADOOP_MAPRED_HOME=/opt/hadoop</value>
+    </property>
+    <property>
+        <name>mapreduce.application.classpath</name>
+        <value>/etc/hadoop,/opt/hadoop/share/hadoop/common/*,/opt/hadoop/share/hadoop/common/lib/*,/opt/hadoop/share/hadoop/hdfs/*,/opt/hadoop/share/hadoop/hdfs/lib/*,/opt/hadoop/share/hadoop/mapreduce/*,/opt/hadoop/share/hadoop/mapreduce/lib/*,/opt/hadoop/share/hadoop/yarn/*,/opt/hadoop/share/hadoop/yarn/lib/*</value>
     </property>
 </configuration>

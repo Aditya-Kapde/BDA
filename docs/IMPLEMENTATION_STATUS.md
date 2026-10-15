@@ -275,10 +275,407 @@ Milestone M10.2 validated YARN cluster health, verified Capacity Scheduler queue
 | **JAR Delivery & Integrity** | Delivery Checksums | Host: `Get-FileHash target\clickstream-mr-1.0.jar`<br>Container: `sha256sum /opt/hadoop/clickstream-mr-1.0.jar` | **Exact SHA-256 match**:<br>`3636e29c68867ab39944797dfdaab8fb564adc5702c3134e6313d0aded2475f2` (86,688 bytes, mode `-rwxr-xr-x`) | **PASS** |
 | **Submission Readiness (Connectivity)** | YARN Client | `hadoop jar ... PipelineDriver` | YARN RPC endpoints `:8032`, `:8030`, `:8031`, `:8033`, HDFS RPC `:9000` accessible | **PASS** |
 
-### 8.3 Blocker Identified for Subsequent Milestone (M10.3 / MapReduce Execution)
+### 8.3 Blocker Resolution
 
-- **Java Bytecode Version Incompatibility**:
-  - `target/clickstream-mr-1.0.jar` was compiled with Java 11 (class file version 55.0).
-  - The runtime JVM inside `apache/hadoop:3.3.6` is OpenJDK 8 (`1.8.0_212-b04`, class file version 52.0).
-  - Attempting to load `edu.bigdata.clickstream.PipelineDriver` throws `java.lang.UnsupportedClassVersionError: class file version 55.0, this version of the Java Runtime only recognizes class file versions up to 52.0`.
-  - In strict compliance with M10.2 rules (*"Do not rebuild the JAR or modify Java code merely to make delivery work"*), the JAR was delivered as-is and verified. For Milestone M10.3, the JAR must be compiled to target Java 8 bytecode (`<maven.compiler.release>8</maven.compiler.release>` / `<release>8</release>`) or a Java 11 Hadoop container runtime must be used.
+- The Java bytecode incompatibility (`UnsupportedClassVersionError: class file version 55.0 vs runtime 52.0`) was resolved in Milestone M10.3 by building `clickstream/hadoop:3.3.6-java11` with Eclipse Temurin OpenJDK 11, preserving both Java 11 build target and Hadoop 3.3.6.
+
+---
+
+## 9. Milestone M10.3: Java Runtime Alignment & MapReduce Submission Readiness
+
+Milestone M10.3 resolved the Java bytecode incompatibility by aligning all cluster services to OpenJDK 11 LTS while strictly preserving the project's authoritative Java 11 build target, Hadoop 3.3.6 release, and HDFS named volumes.
+
+### 9.1 Compatibility Strategy & Implementation
+
+1. **Root Cause Analysis**:
+   - `apache/hadoop:3.3.6` official image is based on CentOS 7 and bundles OpenJDK 8 (`1.8.0_212-b04`).
+   - Project #53 mandates Java 11 (`<maven.compiler.release>11</maven.compiler.release>`).
+   - YARN NodeManager launches container processes (`YarnChild`) using its local JVM, requiring NodeManager, ResourceManager, and submission clients to share a consistent Java 11 runtime.
+2. **Reproducible Image Construction (`Dockerfile.hadoop-java11`)**:
+   - Base image: `apache/hadoop:3.3.6`.
+   - Runtime: Eclipse Temurin OpenJDK 11.0.26 LTS (`OpenJDK11U-jdk_x64_linux_hotspot_11.0.26_4.tar.gz`).
+   - Configuration: Extracted to `/usr/lib/jvm/java-11`, symlinked to `/usr/bin/java`, set `JAVA_HOME=/usr/lib/jvm/java-11`. Preserves official `/opt/starter.sh` entrypoint and `hadoop` user (1000:100).
+   - Image tag: `clickstream/hadoop:3.3.6-java11`.
+3. **Compose Service Alignment (`docker-compose.yml`)**:
+   - Updated all 5 services (`hdfs-namenode`, `hdfs-datanode`, `yarn-resourcemanager`, `yarn-nodemanager`, `historyserver`) to use `clickstream/hadoop:3.3.6-java11`.
+   - Preserved all HDFS named volumes (`clickstream-hdfs-nn-data`, `clickstream-hdfs-dn-data`), configurations, and port mappings.
+
+### 9.2 Validation Evidence
+
+| Check | Target | Command Executed | Verified Evidence | Status |
+|---|---|---|---|:---:|
+| **Container JVM Version** | All 5 cluster containers | `docker exec <svc> java -version` | All 5 return `openjdk version "11.0.26" 2025-01-21`<br>OpenJDK Runtime Environment Temurin-11.0.26+4 | **PASS** |
+| **Hadoop 3.3.6 on Java 11** | Hadoop Runtime | `docker exec yarn-resourcemanager hadoop version` | `Hadoop 3.3.6` running on Java 11 | **PASS** |
+| **NameNode Health** | HDFS Status | `hdfs dfsadmin -safemode get` | `Safe mode is OFF` (exit code 0) | **PASS** |
+| **DataNode Registration** | Datanode Status | `hdfs dfsadmin -report` | 1 live DataNode (`hdfs-datanode`), 950.56 GB remaining | **PASS** |
+| **ResourceManager Health** | Web & API | `curl -s http://localhost:8088/cluster` | HTTP 200 OK, Capacity Scheduler active | **PASS** |
+| **NodeManager Registration** | Cluster Capacity | `yarn node -list` | `Total Nodes: 1`, `Node-State: RUNNING` | **PASS** |
+| **Capacity Scheduler Queues** | Queue Allocations | `yarn queue -status batch`<br>`yarn queue -status default` | `batch`: 70.00% (RUNNING)<br>`default`: 30.00% (RUNNING) | **PASS** |
+| **HDFS Namespace Persistence** | Persistent Volume | `hdfs dfs -ls /` | `/tmp` directory persisted across container rebuild | **PASS** |
+| **Application Rebuild** | Java 11 Build & Tests | `powershell -File build.ps1`<br>`powershell -File run_tests.ps1` | **201/201 tests passed** (100% success across 38 suites) | **PASS** |
+| **JAR Delivery Checksums** | SHA-256 Verification | Host: `Get-FileHash target\clickstream-mr-1.0.jar`<br>Container: `sha256sum /opt/hadoop/clickstream-mr-1.0.jar` | **Exact match**: `f822d639dac21bf515cf79a62595047d47c6e74d74223fbc774476181139be97` | **PASS** |
+| **Client Help Invocation** | Submission Test | `hadoop jar ... PipelineDriver --help` | **Exit code 0**; full CLI help options rendered; zero `UnsupportedClassVersionError` | **PASS** |
+
+---
+
+## 10. Milestone M10.4: Live YARN End-to-End Fixture Smoke Test
+
+**Execution Date:** October 15, 2026  
+**Cluster Environment:** Hadoop 3.3.6 + OpenJDK 11.0.26 LTS + HDFS + YARN Capacity Scheduler  
+**Input Fixture:** `src/test/resources/fixtures/mini_clickstream.csv` (18 raw data rows)  
+**Partition Used:** `dt=2019-11-01` (15 data rows + 1 header = 16 rows, 1,203 bytes)  
+**HDFS Input Path:** `/clickstream/raw/dt=2019-11-01/events.csv`  
+**Run ID:** `smoke-20261015-live02`  
+**Work Directory:** `/clickstream/work/smoke-20261015-live02`  
+**Reports Directory:** `reports/smoke-20261015-live02`  
+**Result:** **PASS (ALL SIX JOBS J1–J6 SUCCEEDED ON YARN, INVARIANTS HELD, 8 REPORTS EXPORTED, INDEPENDENT VERIFICATION PASSED)**
+
+### 10.1 Diagnostic Discovery & Configuration Alignment
+
+During the initial submission attempt (`smoke-20261015-live01`), YARN failed the ApplicationMaster container attempt (`appattempt_1792014584038_0001_000002`):
+- **Diagnostic Error:** `ClassNotFoundException: org.apache.hadoop.mapreduce.v2.app.MRAppMaster`
+- **Root Cause:** In vanilla Hadoop 3.3.6 on Docker, MapReduce container launch requires explicit environment variables `HADOOP_MAPRED_HOME=/opt/hadoop` and application classpath declarations in `mapred-site.xml` and `yarn-site.xml`.
+- **Evidence Preserved:** Failed run directory and metadata were safely retained at `/clickstream/work/smoke-20261015-live01/run_meta.json`.
+- **Resolution:** Updated `conf/mapred-site.xml` with `yarn.app.mapreduce.am.env`, `mapreduce.map.env`, `mapreduce.reduce.env`, and `mapreduce.application.classpath`. Updated `conf/yarn-site.xml` with `yarn.application.classpath`. Restarted YARN services (`yarn-resourcemanager`, `yarn-nodemanager`). HDFS remained completely intact and unmodified.
+
+### 10.2 Live YARN MapReduce Execution (J1–J6)
+
+The pipeline was executed from `yarn-resourcemanager` using the verified Java 11 application JAR:
+```bash
+docker exec yarn-resourcemanager hadoop jar /opt/hadoop/clickstream-mr-1.0.jar \
+  edu.bigdata.clickstream.PipelineDriver \
+  --input /clickstream/raw/dt=2019-11-01/events.csv \
+  --work-dir /clickstream/work/smoke-20261015-live02 \
+  --run-id smoke-20261015-live02 \
+  --queue batch \
+  --topn 10 \
+  --reducers-traffic 2 \
+  --reducers-session 2
+```
+
+**Job Execution Outcomes:**
+
+| Job Stage | Name | YARN Job ID | Status | Duration | Output HDFS Path |
+|---|---|---|:---:|:---:|---|
+| **J1** | `J1_HourlyTraffic` | `job_1792015665851_0001` | **SUCCESS** | 29s | `/clickstream/work/smoke-20261015-live02/traffic` |
+| **J2** | `J2_PeakHour` | `job_1792015665851_0002` | **SUCCESS** | 17s | `/clickstream/work/smoke-20261015-live02/peak` |
+| **J3** | `J3_ViewCount` | `job_1792015665851_0003` | **SUCCESS** | 22s | `/clickstream/work/smoke-20261015-live02/viewcounts` |
+| **J4a** | `J4_TopN_Products` | `job_1792015665851_0004` | **SUCCESS** | 19s | `/clickstream/work/smoke-20261015-live02/top_products` |
+| **J4b** | `J4_TopN_Categories` | `job_1792015665851_0005` | **SUCCESS** | 17s | `/clickstream/work/smoke-20261015-live02/top_categories` |
+| **J5** | `J5_SessionFunnel` | `job_1792015665851_0006` | **SUCCESS** | 20s | `/clickstream/work/smoke-20261015-live02/session_partial` |
+| **J6** | `J6_DailyFunnel` | `job_1792015665851_0007` | **SUCCESS** | 19s | `/clickstream/work/smoke-20261015-live02/funnel_daily` |
+| **Pipeline** | `PipelineDriver` | `smoke-20261015-live02` | **SUCCESS** | 145s | `/clickstream/work/smoke-20261015-live02/run_meta.json` |
+
+### 10.3 HDFS Output & Invariant Verification
+
+1. **Reconciliation Invariant Verification:**
+   - J1 Counters: `TOTAL_RECORDS` = 16, `HEADER_SKIPPED` = 1, `VALID_RECORDS` = 9.
+   - Malformed breakdown: `MALFORMED_COLUMN_COUNT` = 2, `MALFORMED_EVENT_TYPE` = 1, `MALFORMED_ID` = 1, `MALFORMED_PRICE` = 1, `MALFORMED_SESSION` = 1 (Sum = 6).
+   - Invariant check:
+     $$\text{VALID\_RECORDS (9)} + \text{MALFORMED\_RECORDS (6)} = 15$$
+     $$\text{TOTAL\_RECORDS (16)} - \text{HEADER\_SKIPPED (1)} = 15$$
+     $$15 == 15 \implies \mathbf{PASS}\; (\texttt{invariant\_ok: true})$$
+2. **Intermediate J5 Consolidation by J6:**
+   - J5 ran with 2 reducers, emitting 2 partial rows:
+     - `part-r-00000`: `2019-11-01	3	1	0	1	0`
+     - `part-r-00001`: `2019-11-01	3	1	1	0	0`
+   - J6 consolidated duplicate date partitions into 1 global daily record:
+     - `part-r-00000`: `2019-11-01	6	2	1	1	0` ($\mathbf{PASS}$)
+3. **Deterministic Top-N Ranking (J4):**
+   - Products: rank 1 (`product_id 1001`, 3 views), rank 2 (`1002`, 1 view), rank 3 (`1004`, 1 view), rank 4 (`1005`, 1 view).
+   - Categories: rank 1 (`electronics.smartphone`, 5 views).
+
+### 10.4 Report Export & Independent Pandas Verification
+
+The HDFS output was fetched to host directory `work/smoke-20261015-live02`.
+Reports were exported via:
+```bash
+python scripts/export_reports.py \
+  --run-id smoke-20261015-live02 \
+  --work-dir work/smoke-20261015-live02 \
+  --out reports/smoke-20261015-live02 \
+  --hadoop-version 3.3.6
+```
+
+Independent verification was run against raw partition CSV:
+```bash
+python scripts/verify_with_pandas.py \
+  --csv data/smoke_staging_partitions/dt=2019-11-01/events.csv \
+  --job all \
+  --mr-output work/smoke-20261015-live02/traffic \
+  --j2-output work/smoke-20261015-live02/peak \
+  --j3-output work/smoke-20261015-live02/viewcounts \
+  --top-products-output work/smoke-20261015-live02/top_products \
+  --top-categories-output work/smoke-20261015-live02/top_categories \
+  --j5-output work/smoke-20261015-live02/session_partial \
+  --j6-output work/smoke-20261015-live02/funnel_daily \
+  --reports-dir reports/smoke-20261015-live02
+```
+
+**Verification Results:**
+- Report 1 (`traffic_hourly.csv`): **PASS** (5 rows verified)
+- Report 2 (`peak_hour_daily.csv`): **PASS** (1 row verified)
+- Report 3 (`hour_of_day_profile.csv`): **PASS** (4 rows verified)
+- Report 4 (`top_products.csv`): **PASS** (4 rows verified)
+- Report 5 (`top_categories.csv`): **PASS** (1 row verified)
+- Report 6 (`quality_daily.csv`): **PASS** (1 row verified)
+- Report 7 (`quality_reasons.csv`): **PASS** (8 rows verified)
+- Report 8 (`funnel_daily.csv`): **PASS** (1 row verified)
+- Metadata (`report_meta.json` & `run_meta.json`): **PASS** (valid schema and counts)
+- **Overall Result:** `ALL CHECKS PASSED (Baselines verified against SRS rules and invariants)`
+
+### 10.5 Streamlit Dashboard Validation
+
+- Streamlit unit test suite: **10/10 passed** (`pytest tests/test_dashboard.py`).
+- Real run discovery: `find_available_runs('reports')` discovered `['smoke-20261015-live02']`.
+- Data loader verification: `load_run_data` successfully loaded and typed all 8 CSVs and both metadata JSONs.
+- All 5 dashboard views verified headless with real live smoke data without exceptions:
+  - **Overview**: Displays 9 valid, 4 malformed (30.77%), 6 views, 2 carts, 1 purchase, 50% cart abandonment.
+  - **Peak Traffic**: Displays 00:00 UTC peak, hourly trend line chart, composition bar chart.
+  - **Top Pages**: Displays 4 products, 1 category, 16.67% uncategorised share.
+  - **Errors & Funnel**: Displays daily malformed trend, reasons breakdown, and behavioral funnel stages.
+  - **Job Runs**: Displays execution stages for J1–J6 with actual YARN job IDs and durations.
+
+---
+
+## 11. Milestone M10.4.1 — Live Smoke-Test Reconciliation & Dashboard Accuracy Audit
+
+### 11.1 Investigation & Root Cause Analysis
+
+An end-to-end audit of run `smoke-20261015-live02` was conducted to reconcile two discrepancies:
+
+#### Discrepancy 1: Malformed-Record Count Discrepancy (6 vs. 4)
+- **Reported Pipeline Counters**:
+  - `TOTAL_RECORDS = 16`
+  - `HEADER_SKIPPED = 1`
+  - `VALID_RECORDS = 9`
+  - `MALFORMED_RECORDS = 6` (`MALFORMED_COLUMN_COUNT: 2`, `MALFORMED_EVENT_TYPE: 1`, `MALFORMED_ID: 1`, `MALFORMED_PRICE: 1`, `MALFORMED_SESSION: 1`)
+  - Authoritative Invariant: $9 + 6 = 16 - 1 = 15$ ($\mathbf{HOLD}$)
+  - Overall Malformed Rate: $6 / 15 = 40.00\%$
+- **Initial Dashboard Summary**:
+  - `Valid records = 9`
+  - `Malformed records = 4`
+  - `Malformed rate = 30.77%` ($4 / 13$)
+- **Root Cause**:
+  In partition `dt=2019-11-01` of `mini_clickstream.csv` (16 raw lines total):
+  1. Row 1 is the CSV header (`HEADER_SKIPPED = 1`).
+  2. 9 rows parse completely into valid records with non-empty timestamps in date `2019-11-01`.
+  3. 4 malformed rows contain parseable ISO timestamps on `2019-11-01` but fail domain validations (`event_type`, `user_id`, `price`, `user_session`). In accordance with PRD/SRS rules, they are attributed to daily quality metrics (`quality_daily.csv` has 1 row: `2019-11-01, total=13, valid=9, malformed=4, malformed_rate=30.7692%`).
+  4. 2 malformed rows have corrupt column counts (one with 4 columns, one with 10 columns) and cannot be parsed for a timestamp. Under PRD/SRS specifications, they are emitted to `traffic_hourly.csv` under the unattributable key `date=NA, hour=NA, total=0, malformed=2`.
+  5. In `dashboard/data_loader.py` (`calculate_overview_kpis()`), the calculation prioritized `quality_daily.csv` when available:
+     ```python
+     total_records = df_quality['total_records'].sum()      # 13
+     malformed_records = df_quality['malformed_records'].sum()  # 4
+     ```
+     This inadvertently excluded the 2 unattributable malformed records from the run-level overview KPI card, showing 4 instead of 6.
+
+#### Discrepancy 2: Job-Run Visibility (7 YARN Executions vs. 6 Logical Stages)
+- **Observed**: `run_meta.json` records 7 job executions, whereas the dashboard subheader stated "MapReduce Job Stages (J1–J6)".
+- **Root Cause**:
+  The analytics pipeline comprises 6 logical stages (J1 to J6), but Stage J4 (Top-N Ranking) executes two distinct physical MapReduce jobs with different input paths, partitioning keys, and value schemas:
+  - `J4_TopN_Products` (`job_1792015665851_0004`, 19s) reading `work/.../viewcounts/products`
+  - `J4_TopN_Categories` (`job_1792015665851_0005`, 17s) reading `work/.../viewcounts/categories`
+  The dashboard table displayed all 7 executions accurately, but the subheader "MapReduce Job Stages (J1–J6)" lacked stage mapping context, causing confusion.
+
+---
+
+### 11.2 Fixes Applied
+
+1. **`dashboard/data_loader.py`**:
+   - Updated `calculate_overview_kpis` to use `traffic_hourly.csv` as the authoritative source for run-level totals (`valid_records = total_records_sum`, `malformed_records = malformed_records_sum`, `total_pipeline_records = valid + malformed`).
+   - Reconciles both date-attributable (4) and unattributable (2) malformed records, yielding run-level totals: `valid_records=9`, `malformed_records=6`, `total_records=15`, `malformed_rate_pct=40.0%`.
+   - Exposes `attributable_malformed` (4) and `unattributable_malformed` (2) for clear breakdown.
+2. **`dashboard/app.py`**:
+   - Overview KPI card updated to display `6` malformed records (`40.00%`) with explanatory caption: `"6 malformed records (4 date-attributable + 2 unparseable headers/columns) out of 15 non-header records (40.00%)"`.
+   - Job Runs view updated with subheader `"MapReduce Job Executions (7 Jobs across Stages J1–J6)"`, explanatory caption regarding Stage J4 dual executions, and an explicit `"Analytical Stage"` column mapping each physical YARN job to its logical pipeline stage (`Stage J1 (Hourly Traffic)` through `Stage J6 (Daily Funnel)`).
+3. **`tests/test_dashboard.py`**:
+   - Added regression test `test_overview_kpis_with_unattributable_malformed_records` verifying run-level KPI calculation with unattributable malformed rows.
+   - Added regression test `test_job_runs_seven_executions_representation` verifying that all 7 executions are exposed with proper stage mapping and correct columns.
+
+---
+
+### 11.3 Verification & Reconciliation
+
+- **Unit & Integration Tests**: `pytest tests/test_dashboard.py` passed with **11/11 tests passing**.
+- **Headless Dashboard Verification**: Validated all 5 views against live smoke test data with zero errors:
+  - Overview: Valid: 9, Malformed: 6 (40.00%), Total: 15. Invariant $9 + 6 = 15$ verified.
+  - Job Runs: 7 executions cleanly mapped to Stages J1–J6.
+- **Separate Audit Output Verification**:
+  - Exported reports to separate directory `reports/audit-m10-4-1/` via `scripts/export_reports.py`.
+  - Original `reports/smoke-20261015-live02/` preserved untouched (SHA-256 of `quality_daily.csv` verified identical: `416D453552AA72E323ECFAC5B40B6769457AF7287A4C7FD5279D3394FE4153F9`).
+  - Ran `scripts/verify_with_pandas.py`: **`ALL CHECKS PASSED (Baselines verified against SRS rules and invariants)`**.
+
+---
+
+### 11.4 Blockers & Next Actions
+- **Full-Dataset Run**: Intentionally blocked pending benchmarking and final demonstration milestones.
+- **Nightly Scheduling**: Disabled per milestone scope.
+- **Production Readiness**: Preserved as pending until full dataset validation.
+
+---
+
+## 12. Milestone M10.5 — Benchmarking & Full-Dataset Readiness Audit
+
+### 12.1 Objective & Controlled Sample Preparation
+A controlled live benchmark was executed on YARN using the project's largest existing local fixture material (`src/test/resources/fixtures/mini_clickstream.csv`, 1,365 bytes, 19 records) uploaded to a clean, isolated HDFS path `/clickstream/raw/benchmark_fixture/events.csv`.
+- **Sample Characteristics**:
+  - 1 Header record (`HEADER_SKIPPED = 1`)
+  - 10 Valid records across two UTC dates (`2019-11-01` [9 events] and `2019-11-02` [1 event])
+  - 8 Malformed records testing all parsing and domain failure modes (3 `MALFORMED_COLUMN_COUNT`, 1 `MALFORMED_TIMESTAMP`, 1 `MALFORMED_EVENT_TYPE`, 1 `MALFORMED_ID`, 1 `MALFORMED_PRICE`, 1 `MALFORMED_SESSION`)
+  - Reconciliation Invariant: $10 \text{ (valid)} + 8 \text{ (malformed)} = 18 = 19 - 1 \text{ (header)}$ ($\mathbf{HOLD}$)
+- **Sample Limitations**: The 1-million-row sample workflow (`scripts/make_sample.sh`) relies on the full uncompressed Kaggle dataset (`2019-Nov.csv` or `2019-Oct.csv`, ~14 GB), which is not present locally and was not downloaded per mandatory safety constraints.
+
+### 12.2 Measured Live Benchmark Execution (`benchmark-20261015-run01`)
+Executed full J1–J6 pipeline with configuration `--queue batch --topn 10 --reducers-traffic 2 --reducers-session 2`:
+- **Total Pipeline Duration**: 154 seconds (02m 34s)
+- **Execution Breakdown**:
+
+| Job Name | YARN Application/Job ID | Final State | Duration | Maps | Reduces | Map In/Out | Reduce In/Out | Shuffle Bytes |
+|---|---|---|---|---|---|---|---|---|
+| `J1_HourlyTraffic` | `job_1792015665851_0008` | SUCCESS | 28s | 1 | 2 | 19 / 18 | 6 / 6 | 347 B |
+| `J2_PeakHour` | `job_1792015665851_0009` | SUCCESS | 20s | 2 | 1 | 6 / 10 | 10 / 0 | 208 B |
+| `J3_ViewCount` | `job_1792015665851_0010` | SUCCESS | 19s | 1 | 1 | 19 / 11 | 5 / 0 | 227 B |
+| `J4_TopN_Products` | `job_1792015665851_0011` | SUCCESS | 20s | 1 | 1 | 4 / 4 | 4 / 4 | 128 B |
+| `J4_TopN_Categories` | `job_1792015665851_0012` | SUCCESS | 22s | 1 | 1 | 1 / 1 | 1 / 1 | 33 B |
+| `J5_SessionFunnel` | `job_1792015665851_0013` | SUCCESS | 25s | 1 | 2 | 19 / 10 | 6 / 2 | 146 B |
+| `J6_DailyFunnel` | `job_1792015665851_0014` | SUCCESS | 20s | 2 | 1 | 2 / 2 | 2 / 1 | 118 B |
+
+- **Output Accounting**:
+  - HDFS work directory: `/clickstream/work/benchmark-20261015-run01` (496 bytes data + 17,598 bytes `run_meta.json`)
+  - Local reports exported: `reports/benchmark-20261015-run01/` (8 CSVs totaling 1,180 bytes + 2 JSON files totaling 19,006 bytes)
+- **Independent Verification**:
+  - Ran `scripts/verify_with_pandas.py`: **`ALL CHECKS PASSED (Baselines verified against SRS rules and invariants)`** across all 6 MapReduce jobs and all 8 CSV reports.
+  - Multi-day output validated: `traffic_hourly.csv` (6 rows), `peak_hour_daily.csv` (2 dates), `hour_of_day_profile.csv` (4 hours), `quality_daily.csv` (2 dates), `funnel_daily.csv` (1 date).
+
+### 12.3 Performance Requirements Validation
+
+| Requirement | Target | Measured Value | Status |
+|---|---|---|---|
+| **Java Line Coverage** | $\ge 80.0\%$ | **83.91%** (1,585 / 1,889 lines) | **PASS** |
+| **Java Branch Coverage** | Best-effort | **70.28%** (662 / 942 branches) | **PASS** |
+| **Combiner Shuffle Reduction** | $\ge 90.0\%$ | J1 records: 66.67% (18 $\rightarrow$ 6), bytes: 64.15% (968 B $\rightarrow$ 347 B)<br>J3 records: 54.55% (11 $\rightarrow$ 5), bytes: 52.01% (473 B $\rightarrow$ 227 B)<br>J5 records: 40.00% (10 $\rightarrow$ 6) | **UNPROVEN / NOT MET ON SAMPLE** (Mathematically bounded on 18-record sample due to low key multiplicity; requires full-scale dataset) |
+| **Deterministic Generation** | Identical byte outputs | Validated: strict SQL-style sorting across all 8 reports | **PASS** |
+| **Pandas Independent Verification** | 100% agreement | All 6 jobs and 8 reports passed all invariant and numerical checks | **PASS** |
+
+### 12.4 Scalability & Disk Capacity Audit
+
+1. **Host Disk Space Audit**:
+   - Drive `D:` (Workspace drive): **148.39 GB free** (Total 281.63 GB).
+   - Drive `C:` (System drive): **9.49 GB free** (Total 194.23 GB).
+2. **Docker Storage Location**:
+   - Docker Desktop WSL2 data disk (`docker_data.vhdx`, 23.07 GB) resides on **Drive `C:`** (`C:\Users\kapde\AppData\Local\Docker\wsl\disk\docker_data.vhdx`).
+3. **Full Dataset Storage Estimation**:
+   - Raw CSV download: ~14 GB
+   - Staging partitions (`dt=*`): ~14 GB
+   - HDFS ingested blocks: ~14 GB (in `docker_data.vhdx`)
+   - MapReduce intermediate spills, shuffle files, and logs: ~12–15 GB
+   - Work directories, report exports, and local copies: ~5 GB
+   - **Total Required Storage**: **55–65 GB**.
+   - **Risk Assessment**: Ingesting the 14 GB dataset with Docker on `C:` will **exhaust the remaining 9.49 GB on Drive C:**, causing WSL2 filesystem corruption, Docker crash, and host OS instability.
+4. **YARN Resource Constraints**:
+   - Total NodeManager memory: 5,120 MB (`yarn.nodemanager.resource.memory-mb`).
+   - `batch` queue allocation: 70% = 3,584 MB.
+   - Container sizing: `yarn.app.mapreduce.am.resource.mb = 1024`, `mapreduce.reduce.memory.mb = 2048`.
+   - Concurrency limit: 1 AM (1,024 MB) + 1 Reducer (2,048 MB) = 3,072 MB, leaving 512 MB. **Only 1 Reducer can execute concurrently in the batch queue**. Multi-reducer stages (e.g. 8 reducers) run serialized one-by-one.
+
+---
+
+### 12.5 Readiness Decision & Blocker Analysis
+
+**DECISION: NOT READY for a full-dataset run.**
+
+#### Critical Blockers:
+1. **Drive `C:` Storage Exhaustion (BLOCKER)**:
+   Host `C:` has only 9.49 GB free, while Docker Desktop's VHDX storage is located on `C:`. Processing a 14 GB dataset requiring 55–65 GB total storage will crash Docker Desktop and the host system.
+2. **YARN Batch Queue Reducer Serialization (HIGH RISK)**:
+   Batch queue capacity (3,584 MB) limits reduce execution to 1 container at a time when `reduce.memory.mb = 2048`. Processing 100M+ rows with sequential single-reducer execution would cause extreme execution times and risk task timeouts.
+3. **Combiner $\ge 90\%$ Reduction Target Unproven (MEDIUM RISK)**:
+   Target could not be validated on the miniature sample (achieved 64.15% bytes / 66.67% records).
+
+#### Remediation Steps Required Prior to Full-Dataset Execution:
+1. **Relocate Docker VHDX**: Move Docker Desktop WSL2 data disk from `C:\Users\kapde\AppData\Local\Docker\wsl\disk\docker_data.vhdx` to Drive `D:` (which has 148.39 GB free) using Docker Desktop Settings $\rightarrow$ Resources $\rightarrow$ Advanced $\rightarrow$ Disk image location.
+2. **Tune MapReduce Reduce Memory**: Set `mapreduce.reduce.memory.mb` to 1,024 MB and `mapreduce.reduce.java.opts` to `-Xmx819m` to permit 2 parallel reducers in the 3,584 MB batch queue. (Implemented in M10.6).
+3. **Controlled Medium Sample Test**: Perform an intermediate benchmark (e.g. 100K–1M rows) after VHDX relocation to empirically verify the 90% combiner reduction and measure multi-block split throughput before the full 14 GB run.
+
+---
+
+## 13. Milestone M10.6 — Storage Remediation & YARN Resource Configuration Audit
+
+### 13.1 Pre-Flight Inspection & Baseline State
+- **Git Commit**: `6ead1b9 M10.2: YARN Health, Capacity Scheduler & JAR Delivery Report`
+- **Environment**: Hadoop 3.3.6 + Eclipse Temurin OpenJDK 11.0.26 LTS
+- **Containers**: All 5 services (`hdfs-namenode`, `hdfs-datanode`, `yarn-resourcemanager`, `yarn-nodemanager`, `historyserver`) healthy/up.
+- **HDFS Status**: Safe mode OFF, 1 live DataNode, persistent namespace intact.
+- **Physical Disk Storage (Measured)**:
+  - Drive `C:` Free Space: **9.47 GB** (Used: 198.38 GB / Total: 194.23 GB)
+  - Drive `D:` Free Space: **148.39 GB** (Used: 143.06 GB / Total: 281.63 GB)
+  - Docker Desktop WSL2 Disk: `C:\Users\kapde\AppData\Local\Docker\wsl\disk\docker_data.vhdx` (23.07 GB allocated).
+
+### 13.2 Docker Storage Remediation Procedure
+- Per safety rules, no destructive manual pruning or file moves were performed to protect active HDFS volumes.
+- Docker Desktop 4.90.0 on Windows provides a native, supported relocation workflow that preserves all containers, volumes, and images:
+  1. Open **Docker Desktop GUI**.
+  2. Click the **Settings** gear icon (top right).
+  3. Navigate to **Resources $\rightarrow$ Advanced**.
+  4. Under **Disk image location**, click **Browse...** and select a folder on Drive `D:` (e.g. `D:\Docker\wsl`).
+  5. Click **Apply & restart**.
+- **Current Status**: Relocation procedure documented; awaiting user GUI execution. Until completed, the storage gate on Drive `C:` remains **NO-GO**.
+
+### 13.3 Audit & Correction of YARN Concurrency Calculation
+- **Error in M10.5 Suggestion**:
+  M10.5 suggested setting `mapreduce.reduce.memory.mb = 1536` to allow 2 reducers in the 3,584 MB batch queue.
+  Audit proved this mathematically flawed:
+  $$1,024\text{ MB (AM)} + 2 \times 1,536\text{ MB (Reducers)} = 4,096\text{ MB} > 3,584\text{ MB}$$
+  Furthermore, with `yarn.scheduler.minimum-allocation-mb = 1024`, YARN allocates memory in 1,024 MB steps, rounding 1,536 MB up to 2,048 MB anyway.
+- **Corrected & Implemented Configuration**:
+  - `mapreduce.reduce.memory.mb` = `1024` (in `conf/mapred-site.xml`)
+  - `mapreduce.reduce.java.opts` = `-Xmx819m` (80% heap, matching mapper)
+  - Total Allocation for 2 Reducers:
+    $$1,024\text{ MB (AM)} + 2 \times 1,024\text{ MB (Reducers)} = 3,072\text{ MB} \le 3,584\text{ MB}$$
+  - Headroom remaining in queue: $3,584 - 3,072 = 512\text{ MB}$.
+  - Vcores required: 1 (AM) + 2 (Reducers) = 3 vcores $\le 8$ available vcores.
+- **Verification**: Restarted YARN services (`yarn-resourcemanager`, `yarn-nodemanager`, `historyserver`). Executed controlled MapReduce job `HourlyTrafficJob` on YARN (`job_1792020832510_0001`): completed with exit code 0 and verified 6 output rows.
+
+### 13.4 Comprehensive Storage Budget for Full 14 GB Dataset
+
+| Category | Storage Target | Budget | Derivation / Basis |
+|---|---|---|---|
+| **Raw Dataset Download** | Host Disk (`D:`) | 14.0 GB | Measured Kaggle CSV size |
+| **Partition Staging (`dt=*`)** | Host Disk (`D:`) | 14.0 GB | Day-split partitions via `split_by_day.py` |
+| **Local Work & Reports** | Host Disk (`D:`) | 0.5 GB | Copied work dir and exported CSV reports |
+| **Backup / Rollback Space** | Host Disk (`D:`) | 2.0 GB | Config archives and lockfiles |
+| **Host 20% Headroom** | Host Disk (`D:`) | 6.1 GB | 20% of 30.5 GB host subtotal |
+| **HDFS Raw Ingested Data** | Docker VHDX | 14.0 GB | Replicated blocks in HDFS (`replication = 1`) |
+| **MapReduce Spills & Shuffle** | Docker VHDX | 8.0 GB | Intermediate spill files in NodeManager |
+| **HDFS Output Directories** | Docker VHDX | 0.5 GB | J1–J6 final stage outputs |
+| **YARN & Container Logs** | Docker VHDX | 1.5 GB | Aggregated container and job history logs |
+| **VHDX 20% Headroom** | Docker VHDX | 4.8 GB | 20% of 24.0 GB VHDX subtotal |
+| **Total Host Storage** | Host Disk (`D:`) | **36.6 GB** | Derived |
+| **Total VHDX Storage** | Docker VHDX | **28.8 GB** | Derived |
+| **Total Combined Envelope** | All Storage | **65.4 GB** | Conservative combined requirement |
+
+- **Storage Gate Assessment**:
+  - **Drive `C:`**: Available space = 9.47 GB. Required = 28.8 GB VHDX growth. **Deficit = -19.33 GB $\rightarrow$ HARD NO-GO**.
+  - **Drive `D:`**: Available space = 148.39 GB. Required (Host + VHDX) = 65.4 GB. **Surplus = +82.99 GB $\rightarrow$ GO (once VHDX relocated)**.
+
+### 13.5 Benchmark Readiness & Regression Verification
+- **Sample Availability**: No 100K–1M row sample exists locally. Representative scale benchmarking remains **BLOCKED**; 90% combiner target remains **UNPROVEN**.
+- **Regression Test Results**:
+  - Java Unit Tests: **201/201 PASS** (`./run_tests.ps1`)
+  - JaCoCo Line Coverage: **83.91%** (1,585 / 1,889 lines $\ge 80.0\%$ target) $\rightarrow$ **PASS**
+  - Python Ingestion Tests: **7/7 PASS** (`tests/test_data_ingestion.py`)
+  - Python Exporter Tests: **12/12 PASS** (`tests/test_export_reports.py`)
+  - Python Dashboard Tests: **11/11 PASS** (`tests/test_dashboard.py`)
+  - Total Python Tests: **30/30 PASS** (`pytest tests/`)
+  - Shell CLI Verification: `nightly_batch.sh --help` and `ingest_to_hdfs.sh` usage $\rightarrow$ **PASS**
+  - Controlled YARN MR Job: `HourlyTrafficJob` (`job_1792020832510_0001`) with 1024 MB reducers $\rightarrow$ **PASS**
+  - HDFS Namespace Persistence: Verified 3 runs (`smoke-01`, `smoke-02`, `benchmark-01`) intact $\rightarrow$ **PASS**
+  - Report Determinism: SHA-256 hash match `416D453552AA72E323ECFAC5B40B6769457AF7287A4C7FD5279D3394FE4153F9` $\rightarrow$ **PASS**
+
+### 13.6 Decision Summary
+- **Next Controlled Sample Benchmark**: **GO** (contingent on Docker VHDX relocation to Drive `D:`).
+- **Full 14 GB Dataset Run**: **NO-GO** (pending Docker VHDX relocation and sample throughput verification).
+
+
+
+

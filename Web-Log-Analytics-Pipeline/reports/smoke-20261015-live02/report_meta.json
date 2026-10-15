@@ -1,0 +1,178 @@
+{
+  "schema_version": "1.0",
+  "app_version": "1.0",
+  "run_id": "smoke-20261015-live02",
+  "status": "SUCCESS",
+  "generated_at": "2026-10-14T22:21:13Z",
+  "hadoop_version": "3.3.6",
+  "source_run_meta": "run_meta.json",
+  "source_input": "/clickstream/raw/dt=2019-11-01/events.csv",
+  "source_work_dir": "/clickstream/work/smoke-20261015-live02",
+  "reports": {
+    "traffic_hourly.csv": {
+      "row_count": 5,
+      "columns": [
+        "date",
+        "hour",
+        "total",
+        "views",
+        "carts",
+        "removes",
+        "purchases",
+        "malformed",
+        "malformed_rate_pct"
+      ]
+    },
+    "peak_hour_daily.csv": {
+      "row_count": 1,
+      "columns": [
+        "date",
+        "peak_hour",
+        "peak_total",
+        "day_total",
+        "peak_share_pct"
+      ]
+    },
+    "hour_of_day_profile.csv": {
+      "row_count": 4,
+      "columns": [
+        "hour",
+        "total_events",
+        "days_observed",
+        "avg_events_per_day"
+      ]
+    },
+    "top_products.csv": {
+      "row_count": 4,
+      "columns": [
+        "rank",
+        "product_id",
+        "category_code",
+        "brand",
+        "views",
+        "share_of_all_views_pct"
+      ]
+    },
+    "top_categories.csv": {
+      "row_count": 1,
+      "columns": [
+        "rank",
+        "category_code",
+        "views",
+        "share_of_categorised_views_pct"
+      ]
+    },
+    "quality_daily.csv": {
+      "row_count": 1,
+      "columns": [
+        "date",
+        "total_records",
+        "valid",
+        "malformed",
+        "malformed_rate_pct"
+      ]
+    },
+    "quality_reasons.csv": {
+      "row_count": 8,
+      "columns": [
+        "reason",
+        "count"
+      ]
+    },
+    "funnel_daily.csv": {
+      "row_count": 1,
+      "columns": [
+        "date",
+        "sessions",
+        "cart_sessions",
+        "purchase_sessions",
+        "abandoned_sessions",
+        "cart_abandonment_rate_pct",
+        "conversion_rate_pct",
+        "cart_events",
+        "remove_events",
+        "remove_rate_pct"
+      ]
+    }
+  },
+  "counters": {
+    "HEADER_SKIPPED": 1,
+    "MALFORMED_COLUMN_COUNT": 2,
+    "MALFORMED_EVENT_TYPE": 1,
+    "MALFORMED_ID": 1,
+    "MALFORMED_PRICE": 1,
+    "MALFORMED_SESSION": 1,
+    "MISSING_BRAND": 1,
+    "MISSING_CATEGORY": 1,
+    "TOTAL_RECORDS": 16,
+    "VALID_RECORDS": 9,
+    "FILE_BYTES_READ": 291,
+    "FILE_BYTES_WRITTEN": 842158,
+    "FILE_READ_OPS": 0,
+    "FILE_LARGE_READ_OPS": 0,
+    "FILE_WRITE_OPS": 0,
+    "HDFS_BYTES_READ": 1334,
+    "HDFS_BYTES_WRITTEN": 164,
+    "HDFS_READ_OPS": 13,
+    "HDFS_LARGE_READ_OPS": 0,
+    "HDFS_WRITE_OPS": 6,
+    "HDFS_BYTES_READ_EC": 0,
+    "NUM_KILLED_REDUCES": 1,
+    "TOTAL_LAUNCHED_MAPS": 2,
+    "TOTAL_LAUNCHED_REDUCES": 2,
+    "RACK_LOCAL_MAPS": 2,
+    "SLOTS_MILLIS_MAPS": 7590,
+    "SLOTS_MILLIS_REDUCES": 18486,
+    "MILLIS_MAPS": 7590,
+    "MILLIS_REDUCES": 9243,
+    "VCORES_MILLIS_MAPS": 7590,
+    "VCORES_MILLIS_REDUCES": 9243,
+    "MB_MILLIS_MAPS": 7772160,
+    "MB_MILLIS_REDUCES": 18929664,
+    "MAP_INPUT_RECORDS": 16,
+    "MAP_OUTPUT_RECORDS": 15,
+    "MAP_OUTPUT_BYTES": 808,
+    "MAP_OUTPUT_MATERIALIZED_BYTES": 291,
+    "SPLIT_RAW_BYTES": 316,
+    "COMBINE_INPUT_RECORDS": 15,
+    "COMBINE_OUTPUT_RECORDS": 6,
+    "REDUCE_INPUT_GROUPS": 6,
+    "REDUCE_SHUFFLE_BYTES": 291,
+    "REDUCE_INPUT_RECORDS": 8,
+    "REDUCE_OUTPUT_RECORDS": 5,
+    "SPILLED_RECORDS": 16,
+    "SHUFFLED_MAPS": 2,
+    "FAILED_SHUFFLE": 0,
+    "MERGED_MAP_OUTPUTS": 2,
+    "GC_TIME_MILLIS": 104,
+    "CPU_MILLISECONDS": 3480,
+    "PHYSICAL_MEMORY_BYTES": 774266880,
+    "VIRTUAL_MEMORY_BYTES": 10134114304,
+    "COMMITTED_HEAP_BYTES": 553648128,
+    "MAP_PHYSICAL_MEMORY_BYTES_MAX": 286900224,
+    "MAP_VIRTUAL_MEMORY_BYTES_MAX": 2783756288,
+    "REDUCE_PHYSICAL_MEMORY_BYTES_MAX": 229068800,
+    "REDUCE_VIRTUAL_MEMORY_BYTES_MAX": 3689979904,
+    "BAD_ID": 0,
+    "CONNECTION": 0,
+    "IO_ERROR": 0,
+    "WRONG_LENGTH": 0,
+    "WRONG_MAP": 0,
+    "WRONG_REDUCE": 0,
+    "BYTES_READ": 1203,
+    "BYTES_WRITTEN": 164,
+    "VIEWS_WITHOUT_CATEGORY": 1,
+    "VIEW_EVENTS": 6,
+    "DATES_EMITTED": 1
+  },
+  "definitions": {
+    "traffic_hourly": "Hourly event counts (views, carts, removes, purchases) and malformed error rate per date and hour bucket (0-23 UTC).",
+    "peak_hour_daily": "Hour of maximum traffic per day, its event volume, and its percentage share of day total.",
+    "hour_of_day_profile": "Aggregated events per hour across all observed dates, and average events per day.",
+    "top_products": "Top-N most viewed products ranked by view count with percentage share of all view events.",
+    "top_categories": "Top-N most viewed categories ranked by view count with percentage share of categorised view events.",
+    "quality_daily": "Daily data-quality summary showing total records, valid records, malformed records, and malformed rate.",
+    "quality_reasons": "Breakdown of record quality counter counts by specific parser failure reason across the run.",
+    "funnel_daily": "Daily behavioural conversion funnel metrics: sessions, cart sessions, purchase sessions, abandonment rate, and remove rate."
+  }
+}
